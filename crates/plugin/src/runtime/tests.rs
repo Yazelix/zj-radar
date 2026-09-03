@@ -61,11 +61,13 @@ impl PluginRuntime {
     }
 
     /// Test shorthand: advance one lifecycle second. While animation owns the
-    /// timer chain this means two real 500 ms fires; otherwise it is one Fast
+    /// timer chain this means five real 200 ms fires; otherwise it is one Fast
     /// fire. Dedup tests pass explicit elapsed values via `timer_now`.
     fn timer_fast(&mut self, permission: PermissionProbe) -> Outcome {
         if self.timer_chain.armed() == Some(Cadence::Animation) {
-            self.timer_now(permission, Cadence::Animation.seconds());
+            for _ in 1..ANIMATION_FRAMES_PER_DOMAIN_TICK {
+                self.timer_now(permission, Cadence::Animation.seconds());
+            }
             self.timer_now(permission, Cadence::Animation.seconds())
         } else {
             self.timer_now(permission, Cadence::Fast.seconds())
@@ -2030,13 +2032,13 @@ fn cadence_seconds_maps_fast_and_slow() {
     // Both cadences are exercised here (rather than only via the wasm-only
     // glue that replays `SetTimeout`) so this pure mapping is host-testable
     // and neither variant reads as dead code under `cargo test`.
-    assert_eq!(Cadence::Animation.seconds(), 0.5);
+    assert_eq!(Cadence::Animation.seconds(), 0.2);
     assert_eq!(Cadence::Fast.seconds(), 1.0);
     assert_eq!(Cadence::Slow.seconds(), 60.0);
 }
 
 #[test]
-fn running_animation_uses_zellij_cadence_without_accelerating_domain_time() {
+fn running_animation_is_smooth_without_accelerating_domain_time() {
     let mut rt = granted_runtime();
     rt.tabs_changed(vec![tab(0, "work", true)]);
     rt.radar.set_tab_panes_for_position(0, vec![pane(7)]);
@@ -2046,13 +2048,20 @@ fn running_animation_uses_zellij_cadence_without_accelerating_domain_time() {
     let initial_tick = rt.tick;
     let initial_frame = rt.render(30, 40);
 
-    let half = rt.timer_now(PermissionProbe::default(), Cadence::Animation.seconds());
-    assert!(half.render);
-    assert_eq!(rt.tick, initial_tick, "500 ms advances only the animation frame");
-    assert_ne!(rt.render(30, 40), initial_frame, "the Braille frame advances after 500 ms");
+    let mut prior_frame = initial_frame;
+    for _ in 1..ANIMATION_FRAMES_PER_DOMAIN_TICK {
+        let frame = rt.timer_now(PermissionProbe::default(), Cadence::Animation.seconds());
+        assert!(frame.render);
+        assert_eq!(rt.tick, initial_tick, "visual subframes do not advance domain time");
+        let rendered = rt.render(30, 40);
+        assert_ne!(rendered, prior_frame, "each 200 ms fire advances the Braille frame");
+        prior_frame = rendered;
+    }
 
-    rt.timer_now(PermissionProbe::default(), Cadence::Animation.seconds());
-    assert_eq!(rt.tick, initial_tick + 1, "two animation frames equal one lifecycle second");
+    let frame = rt.timer_now(PermissionProbe::default(), Cadence::Animation.seconds());
+    assert!(frame.render);
+    assert_ne!(rt.render(30, 40), prior_frame, "the fifth 200 ms fire also repaints");
+    assert_eq!(rt.tick, initial_tick + 1, "five animation frames equal one lifecycle second");
 
     let mut service_rt = granted_runtime();
     let mut service = payload_for(8, Status::Running);
@@ -2242,7 +2251,7 @@ fn animated_work_arriving_during_slow_rearms_animation() {
 
     // New animated work (a Running status) arrives while Slow-armed.
     // The earlier-scheduled slow fire is a harmless spurious tick, but a
-    // fresh `SetTimeout(Animation)` must also be pushed so the 500ms animation
+    // fresh `SetTimeout(Animation)` must also be pushed so the 200ms animation
     // returns promptly.
     let raw = payload::to_wire(&payload_for(5, Status::Running));
     let outcome = rt.status_pipe(&raw);
@@ -2276,19 +2285,21 @@ fn slow_armed_then_animation_topup() -> PluginRuntime {
 #[test]
 fn live_animation_fires_process_then_stale_slow_fire_is_swallowed() {
     // The COMMON arrival order after a Slow→Animation top-up: the animation
-    // fire (armed for 500ms) lands first; the stale slow fire lands later.
+    // fire (armed for 200ms) lands first; the stale slow fire lands later.
     // The animation fire must process normally — swallowing it by count
     // alone would freeze the tick clock (spinner, debounce, TTL, flash)
     // until the slow fire finally landed, while Fast-worthy work runs.
     let mut rt = slow_armed_then_animation_topup();
 
-    // Two live animation fires advance one domain tick and each re-arms once.
+    // Five live animation fires advance one domain tick and each re-arms once.
     let tick_before = rt.tick;
-    let first = rt.timer_now(PermissionProbe::default(), 0.5);
-    assert_eq!(rt.tick, tick_before, "the first frame does not advance domain time");
-    assert_eq!(first.effects.iter().filter(|e| matches!(e, Effect::SetTimeout(_))).count(), 1);
-    let live = rt.timer_now(PermissionProbe::default(), 0.5);
-    assert_eq!(rt.tick, tick_before + 1, "the second frame advances domain time");
+    for _ in 1..ANIMATION_FRAMES_PER_DOMAIN_TICK {
+        let frame = rt.timer_now(PermissionProbe::default(), Cadence::Animation.seconds());
+        assert_eq!(rt.tick, tick_before, "visual subframes do not advance domain time");
+        assert_eq!(frame.effects.iter().filter(|e| matches!(e, Effect::SetTimeout(_))).count(), 1);
+    }
+    let live = rt.timer_now(PermissionProbe::default(), Cadence::Animation.seconds());
+    assert_eq!(rt.tick, tick_before + 1, "the fifth frame advances domain time");
     let rearms = live
         .effects
         .iter()
@@ -2311,7 +2322,7 @@ fn live_animation_fires_process_then_stale_slow_fire_is_swallowed() {
     assert_eq!(rt.timer_chain.armed(), Some(Cadence::Animation), "a swallowed fire must not disturb the live arm");
 
     // Steady state: exactly one chain remains and keeps ticking.
-    let next = rt.timer_now(PermissionProbe::default(), 0.5);
+    let next = rt.timer_now(PermissionProbe::default(), Cadence::Animation.seconds());
     assert_eq!(rt.tick, tick_before, "one surviving frame does not advance domain time");
     assert!(
         next.effects.contains(&Effect::SetTimeout(Cadence::Animation)),
@@ -2335,7 +2346,7 @@ fn stale_slow_fire_landing_first_is_swallowed() {
     assert_eq!(rt.timer_chain.armed(), Some(Cadence::Animation), "a swallowed fire must not disturb the live arm");
 
     // The surviving animation fire advances a frame and re-arms exactly once.
-    let live = rt.timer_now(PermissionProbe::default(), 0.5);
+    let live = rt.timer_now(PermissionProbe::default(), Cadence::Animation.seconds());
     assert_eq!(rt.tick, tick_before, "the first live frame does not advance domain time");
     let rearms = live
         .effects

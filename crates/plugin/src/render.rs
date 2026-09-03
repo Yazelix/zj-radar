@@ -135,7 +135,7 @@ pub struct RenderOpts {
     pub height: usize,
     /// One-second lifecycle clock used for run age and long-runner easing.
     pub now_tick: u64,
-    /// 500 ms visual clock used only by moving glyphs and decoration.
+    /// 200 ms visual clock used only by moving glyphs and decoration.
     pub animation_frame: u64,
     pub glyphs: GlyphSet,
     /// Whether to render the " RADAR" identity header block.

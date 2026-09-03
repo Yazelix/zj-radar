@@ -55,11 +55,11 @@ use crate::tab_namer::TabRename;
 use crate::theme;
 use std::collections::BTreeMap;
 
-/// How urgently the one-shot timer should re-fire. `Animation` matches
-/// Zellij's 500 ms loading animation while advancing the 1 Hz domain clock
-/// only on every second frame; `Fast` drives debounce/TTL bookkeeping without
-/// animation; `Slow` backs off to a once-a-minute heartbeat. `desired_cadence`
-/// selects among them (or `None` to fully disarm).
+/// How urgently the one-shot timer should re-fire. `Animation` drives a smooth
+/// 5 Hz spinner while advancing the 1 Hz domain clock only on every fifth
+/// frame; `Fast` drives debounce/TTL bookkeeping without animation; `Slow`
+/// backs off to a once-a-minute heartbeat. `desired_cadence` selects among
+/// them (or `None` to fully disarm).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Cadence {
     Animation,
@@ -70,7 +70,7 @@ pub(crate) enum Cadence {
 impl Cadence {
     pub(crate) fn seconds(self) -> f64 {
         match self {
-            Cadence::Animation => 0.5,
+            Cadence::Animation => 0.2,
             Cadence::Fast => 1.0,
             Cadence::Slow => 60.0,
         }
@@ -88,10 +88,11 @@ impl Cadence {
 }
 
 /// A `Timer` fire whose reported elapsed exceeds this came from a Slow (60s)
-/// arm. Animation/Fast fires report ~0.5s/~1s, so 5s tolerates heavy scheduler
+/// arm. Animation/Fast fires report ~0.2s/~1s, so 5s tolerates heavy scheduler
 /// delay while never mistaking a Slow fire. Used only to identify an old Slow
 /// fire after a higher-cadence top-up — see [`PluginRuntime::timer`].
 const STALE_FIRE_ELAPSED_S: f64 = 5.0;
+const ANIMATION_FRAMES_PER_DOMAIN_TICK: u8 = 5;
 
 /// Fast (1 Hz) ticks between peer-presence directory scans — see the gate in
 /// [`PluginRuntime::timer`]. Peers heartbeat every 60s and dim as stale at
@@ -318,13 +319,13 @@ impl TimerChain {
 pub(crate) struct PluginRuntime {
     pub(crate) radar: RadarState,
     pub(crate) tick: u64,
-    /// Visual frame clock. Unlike `tick`, this advances every 500 ms while a
+    /// Visual frame clock. Unlike `tick`, this advances every 200 ms while a
     /// row animates and is never persisted or used for lifecycle deadlines.
     animation_frame: u64,
-    /// One 500 ms animation fire has landed since the last 1 Hz domain tick.
-    /// Keeping the half pending after animation stops preserves the existing
-    /// debounce/expiry wall time through cadence transitions.
-    animation_half_tick: bool,
+    /// Number of 200 ms animation fires since the last 1 Hz domain tick.
+    /// Keeping a partial tick pending after animation stops preserves the
+    /// existing debounce/expiry wall time through cadence transitions.
+    animation_subtick: u8,
     /// The one-shot `SetTimeout` chain — see [`TimerChain`]. Every arm goes
     /// through `arm_timer_if_needed` (`begin_permission_flow` and `project`
     /// both arm through it); every fire retires through `timer`.
@@ -488,14 +489,15 @@ impl PluginRuntime {
         let now = now_epoch_s;
         if cadence == Cadence::Animation {
             self.animation_frame += 1;
-            self.animation_half_tick = !self.animation_half_tick;
-            if self.animation_half_tick {
+            self.animation_subtick =
+                (self.animation_subtick + 1) % ANIMATION_FRAMES_PER_DOMAIN_TICK;
+            if self.animation_subtick != 0 {
                 let mut effects = Vec::new();
                 self.arm_timer_if_needed(now, &mut effects);
                 return Outcome::with_effects(self.radar.is_animating(), effects);
             }
         } else {
-            self.animation_half_tick = false;
+            self.animation_subtick = 0;
         }
         let mut effects = Vec::new();
         let permission_changed =
@@ -513,7 +515,7 @@ impl PluginRuntime {
         // cross-instance convergence pushed statuses get from `status_pipe`.
         let store_changed = self.radar.timer(self.tick, now);
         // Cross-session peers: re-read the directory on 1 Hz domain fires only
-        // — never on a Slow fire or an animation-only half-frame. The scan
+        // — never on a Slow fire or an animation-only subframe. The scan
         // is further decimated to one per `PRESENCE_READ_TICK_INTERVAL`
         // ticks: peers heartbeat at 60s and dim at 90s, so a once-per-second
         // directory read per instance (N tabs × N sessions of wasi stat+read)
@@ -1080,7 +1082,7 @@ impl PluginRuntime {
         true
     }
 
-    /// Spec §10 cadence function. Animation (500ms) while a glyph moves, Fast
+    /// Spec §10 cadence function. Animation (200ms) while a glyph moves, Fast
     /// (1s) for non-visual tick-windowed work, and Slow (60s) while ledger
     /// ages are still changing — or, once
     /// `session_name_changed` has landed, forever. None — the battery
@@ -1103,7 +1105,7 @@ impl PluginRuntime {
         }
         if self.permission.is_waiting() || self.permission.is_requesting() {
             Some(Cadence::Fast)
-        } else if self.radar.is_animating() || self.animation_half_tick {
+        } else if self.radar.is_animating() || self.animation_subtick != 0 {
             Some(Cadence::Animation)
         } else if self.timer_should_continue()
             // A pending cross-session cycle selection needs the idle-commit

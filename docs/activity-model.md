@@ -82,8 +82,8 @@ better than a server that is merely up.
 
 Cadence rule, restated per class: *animating* work
 (`TrackedObservation::animating` = Running minus `Service`, so agent rows
-animate too) uses a 2 Hz visual clock matching Zellij's 500 ms loading
-animation. Every second frame advances the 1 Hz domain clock. **Scheduled
+animate too) uses a 5 Hz visual clock. Every fifth frame advances the 1 Hz
+domain clock. **Scheduled
 one-shots** keep that 1 Hz clock armed — the one-shots being promotable
 pendings awaiting debounce, tentative-Dones awaiting confirm
 (`pending_done`), stale-Running grace clocks (`suspect_running`), unsettled

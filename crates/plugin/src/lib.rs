@@ -423,7 +423,7 @@ impl ZellijPlugin for State {
                 // payload: elapsed seconds since the `set_timeout` call, which
                 // for a fired one-shot is ~= the duration it was armed with —
                 // not a guaranteed-exact echo of it. That's all the runtime
-                // needs: its 5s stale-fire threshold separates the ~0.5s/~1s
+                // needs: its 5s stale-fire threshold separates the ~0.2s/~1s
                 // Animation/Fast arms from a ~60s Slow arm with wide margin,
                 // so scheduler jitter can't flip stale-Slow classification.
                 let probe = if self.runtime.wants_permission_probe() {

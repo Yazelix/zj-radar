@@ -196,9 +196,9 @@ impl GlyphSet {
 }
 
 /// Working status glyph animation (both glyph sets): braille dots
-/// ⠋ ⠸ ⠴ ⠇.
+/// ⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏.
 pub fn working_spin(frame: usize) -> char {
-    const FRAMES: [char; 4] = ['⠋', '⠸', '⠴', '⠇'];
+    const FRAMES: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
     FRAMES[frame % FRAMES.len()]
 }
 
@@ -335,9 +335,9 @@ mod tests {
     #[test]
     fn working_spinner_cycles_braille_dots() {
         assert_eq!(working_spin(0), '⠋');
-        assert_eq!(working_spin(1), '⠸');
-        assert_eq!(working_spin(3), '⠇');
-        assert_eq!(working_spin(4), '⠋'); // wraps
+        assert_eq!(working_spin(1), '⠙');
+        assert_eq!(working_spin(9), '⠏');
+        assert_eq!(working_spin(10), '⠋'); // wraps
     }
 
     #[test]

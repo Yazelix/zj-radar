@@ -342,10 +342,10 @@ and `Kind::from_source`, pinned by `source_round_trips_through_kind`.
 Zellij's timer is one-shot, so the plugin re-arms it at one of three speeds or
 not at all (`PluginRuntime::desired_cadence`):
 
-- **Animation (2 Hz)** while a glyph spins (`TrackedObservation::animating`,
-  Running and not a service). This matches Zellij's own 500 ms loading-animation
-  cadence. Every second frame advances the separate 1 Hz domain clock, so the
-  deadlines below keep their wall time.
+- **Animation (5 Hz)** while a glyph spins (`TrackedObservation::animating`,
+  Running and not a service). Ten Braille frames complete a smooth two-second
+  revolution. Every fifth frame advances the separate 1 Hz domain clock, so
+  the deadlines below keep their wall time.
 - **Fast (1 Hz)** while there is non-visual tick-windowed work: the permission
   flow still live; an un-carried completion edge (a status-pipe notify deferred to
   the timer because its own focus cannot be trusted, see *Settle* in
