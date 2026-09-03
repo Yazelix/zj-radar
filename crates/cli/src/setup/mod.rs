@@ -32,7 +32,8 @@ pub(crate) const CODEX_NOTIFY_MARKER: [&str; 3] = ["zj-radar", "notify", "codex"
 // Also used by `run`'s producer detection so the two agree on what marks a wired
 // Codex producer (shared single source of truth).
 pub(crate) const CODEX_HOOK_MARKER: &str = "ZJ_RADAR_CODEX_HOOK=v1";
-pub(crate) const CODEX_HOOK_COMMAND: &str = "ZJ_RADAR_CODEX_HOOK=v1 zj-radar notify codex";
+pub(crate) const CODEX_HOOK_COMMAND: &str =
+    "sh -c 'command -v zj-radar >/dev/null 2>&1 || exit 0; ZJ_RADAR_CODEX_HOOK=v1 zj-radar notify codex'";
 // No space before the `&&`: cmd.exe folds everything up to the separator into
 // the env var's VALUE, so `v1 &&` would set the marker to "v1 " and break the
 // marker round-trip that idempotency/uninstall detection depends on.

@@ -65,6 +65,9 @@ zj-radar setup codex     # Codex hooks; then run `/hooks` inside Codex to trust 
 zj-radar setup opencode  # Opencode bridge plugin; then restart opencode
 ```
 
+Codex setup also re-enables only zj-radar-owned hooks without changing their
+trust. The generated POSIX hook exits quietly when `zj-radar` is unavailable.
+
 Want to look before you commit? `zj-radar run` starts a throwaway session with
 the rail wired in and leaves your config alone. Later, `zj-radar update` moves
 the CLI and the sidebar to the latest release together. Source builds, Nix,

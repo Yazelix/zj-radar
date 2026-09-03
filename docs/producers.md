@@ -41,6 +41,11 @@ This adds command hooks to `hooks.json` under `$CODEX_HOME` (default
 existing Codex `notify` program is preserved. After installing or changing the
 hooks, run `/hooks` inside Codex once to review and trust them.
 
+Setup removes explicit disablement only from its own hook entries and leaves
+their trust hashes unchanged. On POSIX, the generated hook exits successfully
+without output when `zj-radar` is not on `PATH`, so the global Codex config is
+safe in environments where the CLI is not installed.
+
 | Codex event | Status |
 |---|---|
 | `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `SubagentStart`, `SubagentStop` | `running` |

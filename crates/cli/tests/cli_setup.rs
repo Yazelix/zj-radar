@@ -120,7 +120,17 @@ fn setup_codex_hooks_is_idempotent() {
         "first run must have written our hook command; got: {after_first:?}"
     );
 
-    // Second run must not change the file
+    let hook_key = format!("{}:stop:0:0", hooks_path.display());
+    fs::write(
+        codex_home.path().join("config.toml"),
+        format!(
+            "[hooks.state.\"{hook_key}\"]\nenabled = false\ntrusted_hash = \"sha256:existing\"\n"
+        ),
+    )
+    .unwrap();
+
+    // Second run must not change hooks.json, but explicit setup returns only
+    // its own disabled hook to Codex's enabled-by-default state.
     run();
     let after_second = fs::read_to_string(&hooks_path).unwrap();
 
@@ -128,6 +138,9 @@ fn setup_codex_hooks_is_idempotent() {
         after_first, after_second,
         "second setup must be a no-op (idempotent)"
     );
+    let config = fs::read_to_string(codex_home.path().join("config.toml")).unwrap();
+    assert!(!config.contains("enabled = false"));
+    assert!(config.contains("trusted_hash = \"sha256:existing\""));
 }
 
 // ── codex hook guidance mentions disabled hooks when config says so ───────────

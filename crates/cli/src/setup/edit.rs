@@ -8,6 +8,7 @@ use crate::setup::detect::{
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
+use std::path::Path;
 use toml_edit::{Array, DocumentMut};
 
 #[derive(Debug)]
@@ -80,6 +81,78 @@ pub fn edit_codex_hooks(existing: &str, install: bool) -> Result<Outcome, String
         Ok(Outcome::Unchanged)
     } else {
         Ok(Outcome::Changed(new))
+    }
+}
+
+/// Remove explicit disablement only for the Radar handlers in `hooks.json`.
+/// Trust hashes remain entirely owned by Codex.
+pub fn edit_codex_hook_enablement(
+    existing: &str,
+    hooks_path: &Path,
+    hooks: &str,
+) -> Result<Outcome, String> {
+    let file = parse_hooks_file(hooks)?;
+    let mut doc = existing
+        .parse::<DocumentMut>()
+        .map_err(|e| format!("config.toml is not valid TOML: {e}"))?;
+    let Some(state) = doc
+        .get_mut("hooks")
+        .and_then(|item| item.as_table_like_mut())
+        .and_then(|hooks| hooks.get_mut("state"))
+        .and_then(|item| item.as_table_like_mut())
+    else {
+        return Ok(Outcome::Unchanged);
+    };
+    let mut changed = false;
+
+    for (event, groups) in file.hooks {
+        let Some(event) = codex_hook_state_event(&event) else {
+            continue;
+        };
+        for (group_index, group) in groups.into_iter().enumerate() {
+            let Some(handlers) = group.hooks else { continue };
+            for (handler_index, handler) in handlers.into_iter().enumerate() {
+                if !codex_hook_handler_is_ours(&handler) {
+                    continue;
+                }
+                let key = format!(
+                    "{}:{event}:{group_index}:{handler_index}",
+                    hooks_path.display()
+                );
+                let remove_entry = state.get_mut(&key).is_some_and(|item| {
+                    let Some(entry) = item.as_table_like_mut() else {
+                        return false;
+                    };
+                    if entry.get("enabled").and_then(|item| item.as_bool()) == Some(false) {
+                        entry.remove("enabled");
+                        changed = true;
+                    }
+                    entry.iter().next().is_none()
+                });
+                if remove_entry {
+                    state.remove(&key);
+                }
+            }
+        }
+    }
+
+    if changed {
+        Ok(Outcome::Changed(doc.to_string()))
+    } else {
+        Ok(Outcome::Unchanged)
+    }
+}
+
+fn codex_hook_state_event(event: &str) -> Option<&'static str> {
+    match event {
+        "UserPromptSubmit" => Some("user_prompt_submit"),
+        "PreToolUse" => Some("pre_tool_use"),
+        "PermissionRequest" => Some("permission_request"),
+        "PostToolUse" => Some("post_tool_use"),
+        "SubagentStart" => Some("subagent_start"),
+        "SubagentStop" => Some("subagent_stop"),
+        "Stop" => Some("stop"),
+        _ => None,
     }
 }
 
@@ -561,7 +634,7 @@ mod tests {
                     assert!(
                         v.pointer(&format!("/hooks/{event}/0/hooks/0/command"))
                             .and_then(Value::as_str)
-                            .is_some_and(|command| command.contains(CODEX_HOOK_MARKER)),
+                            == Some(CODEX_HOOK_COMMAND),
                         "missing owned hook for {event}:\n{s}"
                     );
                 }
@@ -725,6 +798,101 @@ mod tests {
         assert!(edit_codex_hooks(r#"{"hooks":[]}"#, true).is_err());
         assert!(edit_codex_hooks(r#"{"hooks":{"Stop":{}}}"#, true).is_err());
         assert!(edit_codex_hooks(r#"{"hooks":{"Stop":[{"hooks":{}}]}}"#, true).is_err());
+    }
+
+    #[test]
+    fn codex_setup_enables_only_owned_hook_states_without_trusting_them() {
+        let hooks = match edit_codex_hooks(
+            r#"{
+              "hooks": {
+                "Stop": [
+                  { "hooks": [{ "type": "command", "command": "echo foreign" }] }
+                ]
+              }
+            }"#,
+            true,
+        )
+        .unwrap()
+        {
+            Outcome::Changed(s) => s,
+            o => panic!("{o:?}"),
+        };
+        let existing = r#"[hooks.state."/tmp/hooks.json:stop:0:0"]
+enabled = false
+trusted_hash = "sha256:foreign"
+
+[hooks.state."/tmp/hooks.json:stop:1:0"]
+enabled = false
+trusted_hash = "sha256:radar"
+
+[hooks.state."/tmp/hooks.json:pre_tool_use:0:0"]
+enabled = false
+"#;
+
+        let updated = match edit_codex_hook_enablement(
+            existing,
+            std::path::Path::new("/tmp/hooks.json"),
+            &hooks,
+        )
+        .unwrap()
+        {
+            Outcome::Changed(s) => s,
+            o => panic!("{o:?}"),
+        };
+        let doc = updated.parse::<toml_edit::DocumentMut>().unwrap();
+
+        assert_eq!(
+            doc["hooks"]["state"]["/tmp/hooks.json:stop:0:0"]["enabled"].as_bool(),
+            Some(false),
+            "foreign hook state must remain disabled"
+        );
+        assert!(
+            doc["hooks"]["state"]["/tmp/hooks.json:stop:1:0"]
+                .get("enabled")
+                .is_none(),
+            "owned hook must return to Codex's default enabled state"
+        );
+        assert_eq!(
+            doc["hooks"]["state"]["/tmp/hooks.json:stop:1:0"]["trusted_hash"].as_str(),
+            Some("sha256:radar"),
+            "setup must not manufacture or remove trust"
+        );
+        assert!(
+            doc["hooks"]["state"]
+                .get("/tmp/hooks.json:pre_tool_use:0:0")
+                .is_none(),
+            "an empty owned state entry should be removed"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn codex_hook_is_quiet_without_radar_and_preserves_notify_failure() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::process::Command;
+
+        let empty_path = tempfile::TempDir::new().unwrap();
+        let absent = Command::new("/bin/sh")
+            .args(["-c", CODEX_HOOK_COMMAND])
+            .env("PATH", "/bin")
+            .output()
+            .unwrap();
+        assert!(absent.status.success());
+        assert!(absent.stdout.is_empty());
+        assert!(absent.stderr.is_empty());
+
+        let radar = empty_path.path().join("zj-radar");
+        std::fs::write(&radar, "#!/bin/sh\nexit 23\n").unwrap();
+        std::fs::set_permissions(&radar, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let present = Command::new("/bin/sh")
+            .args(["-c", CODEX_HOOK_COMMAND])
+            .env(
+                "PATH",
+                std::env::join_paths([empty_path.path(), std::path::Path::new("/bin")]).unwrap(),
+            )
+            .status()
+            .unwrap();
+        assert_eq!(present.code(), Some(23));
     }
 
     /// Direct coverage of the shared scanner. `brace_delta` and

@@ -77,36 +77,62 @@ fn setup_codex_hooks(uninstall: bool, dry_run: bool, yes: bool, is_tty: bool) {
     let Some(outcome) = edit_or_report("codex", edit_codex_hooks(&existing, !uninstall)) else {
         return;
     };
-    match outcome {
+    let hooks = match outcome {
         Outcome::Unchanged if uninstall => {
-            println!("codex: hooks already removed ({})", path.display())
+            println!("codex: hooks already removed ({})", path.display());
+            existing
         }
         Outcome::Unchanged => {
             println!("codex: hooks already up to date ({})", path.display());
-            print_codex_hook_guidance(&facts);
+            existing
         }
         Outcome::Conflict => unreachable!("codex hooks editor has no conflict outcome"),
         Outcome::Changed(new) => {
             if dry_run {
                 println!("--- {} (dry-run) ---\n{new}", path.display());
-                if !uninstall {
-                    print_codex_hook_guidance(&facts);
+            } else {
+                let prompt = format!("Write {}?", path.display());
+                if !confirm_and_write("codex", &path, &new, yes, is_tty, &prompt, || Ok(())) {
+                    return;
                 }
-                return;
+                println!(
+                    "codex: hooks {} ({})",
+                    if uninstall { "removed" } else { "installed" },
+                    path.display()
+                );
             }
-            let prompt = format!("Write {}?", path.display());
-            if !confirm_and_write("codex", &path, &new, yes, is_tty, &prompt, || Ok(())) {
-                return;
-            }
-            println!(
-                "codex: hooks {} ({})",
-                if uninstall { "removed" } else { "installed" },
-                path.display()
-            );
-            if !uninstall {
-                print_codex_hook_guidance(&facts);
-            }
+            new
         }
+    };
+    if !uninstall {
+        enable_codex_hook_states(&path, &hooks, dry_run, yes, is_tty);
+        print_codex_hook_guidance(&facts);
+    }
+}
+
+fn enable_codex_hook_states(
+    hooks_path: &std::path::Path,
+    hooks: &str,
+    dry_run: bool,
+    yes: bool,
+    is_tty: bool,
+) {
+    let Some(path) = codex_config_path() else { return };
+    let existing = std::fs::read_to_string(&path).unwrap_or_default();
+    let Some(outcome) = edit_or_report(
+        "codex",
+        edit_codex_hook_enablement(&existing, hooks_path, hooks),
+    ) else {
+        return;
+    };
+    let Outcome::Changed(new) = outcome else { return };
+    if dry_run {
+        println!("--- {} (dry-run) ---\n{new}", path.display());
+        return;
+    }
+    let prompt = format!("Enable zj-radar hooks in {}?", path.display());
+    if confirm_and_write("codex", &path, &new, yes, is_tty, &prompt, || Ok(())) {
+        println!("codex: hooks enabled ({})", path.display());
     }
 }
 

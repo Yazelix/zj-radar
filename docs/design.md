@@ -304,8 +304,10 @@ layout) is unaffected; only the nested case is.
   register with the plugin; no `settings.json` editing.
 - **Codex**: `zj-radar setup codex` installs marker-owned command hooks in
   `hooks.json`; Codex sends hook JSON on stdin and `zj-radar notify codex`
-  maps it. The legacy single-slot `config.toml` `notify` path stays behind
-  `--legacy-notify` and can only emit `done`.
+  maps it. Setup clears explicit disablement only for those owned hooks and
+  never changes Codex's trust hashes. The POSIX command is a quiet no-op when
+  the CLI is absent. The legacy single-slot `config.toml` `notify` path stays
+  behind `--legacy-notify` and can only emit `done`.
 - **Opencode**: `zj-radar setup opencode` drops a marker-owned JS bridge into
   opencode's auto-loaded plugins dir. The bridge picks the status class (it
   knows which event fired) and spawns `zj-radar notify opencode --status <s>`
