@@ -810,6 +810,14 @@ impl RadarState {
         self.status.needs_ticks() || self.command.needs_ticks()
     }
 
+    /// Whether any row currently draws a moving glyph. Kept separate from
+    /// `needs_fast_ticks`, which also includes non-visual debounce and expiry
+    /// work that must stay on the 1 Hz domain clock.
+    pub(crate) fn is_animating(&self) -> bool {
+        self.status.observations().any(|(_, observation)| observation.animating())
+            || self.command.observations().any(|(_, observation)| observation.animating())
+    }
+
     /// Apply the user's `interactive_commands` extras to the command store
     /// (level-triggered — see `CommandStore::set_interactive_extras`). Called
     /// after snapshot load and on every `config.v1` override, so both a

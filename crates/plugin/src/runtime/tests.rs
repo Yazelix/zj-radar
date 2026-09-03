@@ -60,11 +60,16 @@ impl PluginRuntime {
         self.timer(permission, elapsed, crate::clock::now_epoch_s())
     }
 
-    /// Test shorthand: deliver a live Fast fire (elapsed ~1s) — how every
-    /// test that isn't about the stale-fire dedup drives the tick entry
-    /// point. Dedup tests pass explicit elapsed values via `timer_now`.
+    /// Test shorthand: advance one lifecycle second. While animation owns the
+    /// timer chain this means two real 500 ms fires; otherwise it is one Fast
+    /// fire. Dedup tests pass explicit elapsed values via `timer_now`.
     fn timer_fast(&mut self, permission: PermissionProbe) -> Outcome {
-        self.timer_now(permission, Cadence::Fast.seconds())
+        if self.timer_chain.armed() == Some(Cadence::Animation) {
+            self.timer_now(permission, Cadence::Animation.seconds());
+            self.timer_now(permission, Cadence::Animation.seconds())
+        } else {
+            self.timer_now(permission, Cadence::Fast.seconds())
+        }
     }
 
     /// Test shorthand: deliver a live Slow fire (elapsed ~60s).
@@ -577,7 +582,7 @@ fn status_pipe_mutates_store_arms_timer_and_persists_snapshot() {
     // notify, so PersistSnapshot now precedes SetTimeout. Assert membership,
     // not position — the order contract has its own dedicated test.
     assert_eq!(outcome.effects.len(), 2);
-    assert!(outcome.effects.contains(&Effect::SetTimeout(Cadence::Fast)));
+    assert!(outcome.effects.contains(&Effect::SetTimeout(Cadence::Animation)));
     assert!(outcome
         .effects
         .iter()
@@ -715,7 +720,7 @@ fn cwd_change_renames_default_named_tab_and_command_uses_cwd() {
     // No peer scan: tick 2 is inside the decimation interval of tick 1's seed.
     assert_eq!(
         timer.effects,
-        vec![Effect::PersistSnapshot, Effect::SetTimeout(Cadence::Fast)]
+        vec![Effect::PersistSnapshot, Effect::SetTimeout(Cadence::Animation)]
     );
     let state = runtime
         .radar
@@ -2025,8 +2030,38 @@ fn cadence_seconds_maps_fast_and_slow() {
     // Both cadences are exercised here (rather than only via the wasm-only
     // glue that replays `SetTimeout`) so this pure mapping is host-testable
     // and neither variant reads as dead code under `cargo test`.
+    assert_eq!(Cadence::Animation.seconds(), 0.5);
     assert_eq!(Cadence::Fast.seconds(), 1.0);
     assert_eq!(Cadence::Slow.seconds(), 60.0);
+}
+
+#[test]
+fn running_animation_uses_zellij_cadence_without_accelerating_domain_time() {
+    let mut rt = granted_runtime();
+    rt.tabs_changed(vec![tab(0, "work", true)]);
+    rt.radar.set_tab_panes_for_position(0, vec![pane(7)]);
+
+    let edge = rt.status_pipe(&crate::payload::to_wire(&payload_for(7, Status::Running)));
+    assert!(edge.effects.contains(&Effect::SetTimeout(Cadence::Animation)));
+    let initial_tick = rt.tick;
+    let initial_frame = rt.render(30, 40);
+
+    let half = rt.timer_now(PermissionProbe::default(), Cadence::Animation.seconds());
+    assert!(half.render);
+    assert_eq!(rt.tick, initial_tick, "500 ms advances only the animation frame");
+    assert_ne!(rt.render(30, 40), initial_frame, "the Braille frame advances after 500 ms");
+
+    rt.timer_now(PermissionProbe::default(), Cadence::Animation.seconds());
+    assert_eq!(rt.tick, initial_tick + 1, "two animation frames equal one lifecycle second");
+
+    let mut service_rt = granted_runtime();
+    let mut service = payload_for(8, Status::Running);
+    service.source = "server".into();
+    let service_edge = service_rt.status_pipe(&crate::payload::to_wire(&service));
+    assert!(
+        !service_edge.effects.contains(&Effect::SetTimeout(Cadence::Animation)),
+        "a steady service row must not acquire the animation cadence"
+    );
 }
 
 #[test]
@@ -2198,31 +2233,31 @@ fn saturated_history_with_known_name_keeps_slow_armed_for_the_heartbeat() {
 }
 
 #[test]
-fn fast_work_arriving_during_slow_rearms_fast() {
+fn animated_work_arriving_during_slow_rearms_animation() {
     let mut rt = granted_runtime();
     let now = crate::clock::now_epoch_s();
     seed_done_ledger(&mut rt, now);
     rt.tabs_changed(vec![]);
     assert_eq!(rt.timer_chain.armed(), Some(Cadence::Slow), "setup: slow-armed on fresh history");
 
-    // New fast-worthy work (a Running status) arrives while Slow-armed.
+    // New animated work (a Running status) arrives while Slow-armed.
     // The earlier-scheduled slow fire is a harmless spurious tick, but a
-    // fresh `SetTimeout(Fast)` must also be pushed so the 1s resolution
+    // fresh `SetTimeout(Animation)` must also be pushed so the 500ms animation
     // returns promptly.
     let raw = payload::to_wire(&payload_for(5, Status::Running));
     let outcome = rt.status_pipe(&raw);
     assert!(
-        outcome.effects.contains(&Effect::SetTimeout(Cadence::Fast)),
-        "fast work arriving during a slow arm must re-arm Fast, got {:?}",
+        outcome.effects.contains(&Effect::SetTimeout(Cadence::Animation)),
+        "animated work arriving during a slow arm must re-arm Animation, got {:?}",
         outcome.effects
     );
-    assert_eq!(rt.timer_chain.armed(), Some(Cadence::Fast));
+    assert_eq!(rt.timer_chain.armed(), Some(Cadence::Animation));
 }
 
 /// Shared setup for the stale-fire dedup tests: Slow-armed on fresh
-/// history (one fire in flight), then a Running broadcast tops up Fast
+/// history (one fire in flight), then a Running broadcast tops up Animation
 /// (a second, non-cancellable fire in flight).
-fn slow_armed_then_fast_topup() -> PluginRuntime {
+fn slow_armed_then_animation_topup() -> PluginRuntime {
     let mut rt = granted_runtime();
     let now = crate::clock::now_epoch_s();
     seed_done_ledger(&mut rt, now);
@@ -2231,26 +2266,29 @@ fn slow_armed_then_fast_topup() -> PluginRuntime {
     let raw = payload::to_wire(&payload_for(5, Status::Running));
     let outcome = rt.status_pipe(&raw);
     assert!(
-        outcome.effects.contains(&Effect::SetTimeout(Cadence::Fast)),
-        "setup: the top-up must arm Fast, got {:?}",
+        outcome.effects.contains(&Effect::SetTimeout(Cadence::Animation)),
+        "setup: the top-up must arm Animation, got {:?}",
         outcome.effects
     );
     rt
 }
 
 #[test]
-fn live_fast_fire_processes_then_stale_slow_fire_is_swallowed() {
-    // The COMMON arrival order after a Slow→Fast top-up: the fast fire
-    // (armed for 1s) lands first; the stale slow fire lands up to 59s
-    // later. The fast fire must process normally — swallowing it by count
+fn live_animation_fires_process_then_stale_slow_fire_is_swallowed() {
+    // The COMMON arrival order after a Slow→Animation top-up: the animation
+    // fire (armed for 500ms) lands first; the stale slow fire lands later.
+    // The animation fire must process normally — swallowing it by count
     // alone would freeze the tick clock (spinner, debounce, TTL, flash)
     // until the slow fire finally landed, while Fast-worthy work runs.
-    let mut rt = slow_armed_then_fast_topup();
+    let mut rt = slow_armed_then_animation_topup();
 
-    // The live fast fire (elapsed ~1s) ticks and re-arms exactly once.
+    // Two live animation fires advance one domain tick and each re-arms once.
     let tick_before = rt.tick;
-    let live = rt.timer_now(PermissionProbe::default(), 1.0);
-    assert_eq!(rt.tick, tick_before + 1, "the live fast fire ticks");
+    let first = rt.timer_now(PermissionProbe::default(), 0.5);
+    assert_eq!(rt.tick, tick_before, "the first frame does not advance domain time");
+    assert_eq!(first.effects.iter().filter(|e| matches!(e, Effect::SetTimeout(_))).count(), 1);
+    let live = rt.timer_now(PermissionProbe::default(), 0.5);
+    assert_eq!(rt.tick, tick_before + 1, "the second frame advances domain time");
     let rearms = live
         .effects
         .iter()
@@ -2258,25 +2296,25 @@ fn live_fast_fire_processes_then_stale_slow_fire_is_swallowed() {
         .count();
     assert_eq!(rearms, 1, "the live fire re-arms exactly once, got {:?}", live.effects);
     assert!(
-        live.effects.contains(&Effect::SetTimeout(Cadence::Fast)),
-        "running work keeps the Fast cadence"
+        live.effects.contains(&Effect::SetTimeout(Cadence::Animation)),
+        "running work keeps the Animation cadence"
     );
 
     // The STALE slow fire (elapsed ~60s) lands second, with the re-armed
-    // fast fire still in flight: swallowed whole — no tick advance, no
+    // animation fire still in flight: swallowed whole — no tick advance, no
     // effects, the live arm untouched. Ticking it would re-arm a
     // second persistent chain.
     let tick_before = rt.tick;
     let stale = rt.timer_now(PermissionProbe::default(), 60.0);
     assert_eq!(stale, Outcome::none(), "a stale slow fire must be swallowed whole");
     assert_eq!(rt.tick, tick_before, "a swallowed fire must not advance the tick");
-    assert_eq!(rt.timer_chain.armed(), Some(Cadence::Fast), "a swallowed fire must not disturb the live arm");
+    assert_eq!(rt.timer_chain.armed(), Some(Cadence::Animation), "a swallowed fire must not disturb the live arm");
 
     // Steady state: exactly one chain remains and keeps ticking.
-    let next = rt.timer_now(PermissionProbe::default(), 1.0);
-    assert_eq!(rt.tick, tick_before + 1, "the surviving chain keeps ticking");
+    let next = rt.timer_now(PermissionProbe::default(), 0.5);
+    assert_eq!(rt.tick, tick_before, "one surviving frame does not advance domain time");
     assert!(
-        next.effects.contains(&Effect::SetTimeout(Cadence::Fast)),
+        next.effects.contains(&Effect::SetTimeout(Cadence::Animation)),
         "the surviving chain re-arms, got {:?}",
         next.effects
     );
@@ -2285,20 +2323,20 @@ fn live_fast_fire_processes_then_stale_slow_fire_is_swallowed() {
 #[test]
 fn stale_slow_fire_landing_first_is_swallowed() {
     // The RARE arrival order (top-up in the slow window's final second):
-    // the stale slow fire lands before the fast one. It must be swallowed
+    // the stale slow fire lands before the animation one. It must be swallowed
     // — another fire is in flight and its elapsed marks it slow-armed —
-    // and the fast fire then processes normally.
-    let mut rt = slow_armed_then_fast_topup();
+    // and the animation fire then processes normally.
+    let mut rt = slow_armed_then_animation_topup();
 
     let tick_before = rt.tick;
     let stale = rt.timer_now(PermissionProbe::default(), 60.0);
     assert_eq!(stale, Outcome::none(), "a stale slow fire must be swallowed whole");
     assert_eq!(rt.tick, tick_before, "a swallowed fire must not advance the tick");
-    assert_eq!(rt.timer_chain.armed(), Some(Cadence::Fast), "a swallowed fire must not disturb the live arm");
+    assert_eq!(rt.timer_chain.armed(), Some(Cadence::Animation), "a swallowed fire must not disturb the live arm");
 
-    // The surviving fast fire ticks normally and re-arms exactly once.
-    let live = rt.timer_now(PermissionProbe::default(), 1.0);
-    assert_eq!(rt.tick, tick_before + 1, "the live fire ticks");
+    // The surviving animation fire advances a frame and re-arms exactly once.
+    let live = rt.timer_now(PermissionProbe::default(), 0.5);
+    assert_eq!(rt.tick, tick_before, "the first live frame does not advance domain time");
     let rearms = live
         .effects
         .iter()
@@ -2306,8 +2344,8 @@ fn stale_slow_fire_landing_first_is_swallowed() {
         .count();
     assert_eq!(rearms, 1, "the live fire re-arms exactly once, got {:?}", live.effects);
     assert!(
-        live.effects.contains(&Effect::SetTimeout(Cadence::Fast)),
-        "running work keeps the Fast cadence"
+        live.effects.contains(&Effect::SetTimeout(Cadence::Animation)),
+        "running work keeps the Animation cadence"
     );
 }
 
@@ -2463,7 +2501,7 @@ fn read_presences_is_bound_to_fast_fires_only() {
 
 // ── Fast-decay heartbeat survival (task-13 investigation) ───────────────
 //
-// Field reports: sessions that had Fast-cadence activity and then decayed
+// Field reports: sessions that had high-cadence activity and then decayed
 // to idle stopped heartbeating (their presence file's mtime froze), while
 // a session idle from birth (never armed Fast) kept heartbeating forever.
 // Suspected mechanism: the Fast→Slow decay stranding `TimerChain` — the
@@ -2545,13 +2583,13 @@ fn slow_heartbeat_survives_a_fast_decay_indefinitely() {
     sim.schedule_from(&named.effects);
     drive_tabs_and_panes(&mut rt);
 
-    // busy: a running command tops up Fast on top of the still-outstanding
+    // busy: a running command tops up Animation on top of the outstanding
     // Slow arm — exactly the "TWO in flight" case 24968b1's tests pinned.
     let busy = rt.status_pipe(&payload_json(7, "running"));
     sim.schedule_from(&busy.effects);
-    assert_eq!(rt.timer_chain.armed(), Some(Cadence::Fast), "setup: busy tops up Fast");
+    assert_eq!(rt.timer_chain.armed(), Some(Cadence::Animation), "setup: busy tops up Animation");
 
-    // Drive real fires for a few seconds of Fast-cadence "work", then end
+    // Drive real fires for a few seconds of animated work, then end
     // the activity (status -> done, which settles and lets the row go
     // idle), continuing to drain the FireSim exactly as Zellij would
     // deliver it — including the original stale Slow fire, whenever in
@@ -2660,7 +2698,7 @@ fn assert_heartbeats_for(rt: &mut PluginRuntime, sim: &mut FireSim, minutes: u64
 #[test]
 fn slow_heartbeat_survives_a_long_sustained_busy_period() {
     // Variant where the original stale Slow fire's 60s deadline actually
-    // elapses WHILE Fast activity is still ongoing (not right at the
+    // elapses WHILE animated activity is still ongoing (not right at the
     // boundary), so it gets swallowed mid-burst rather than right at the
     // busy/idle seam.
     let mut rt = PluginRuntime { permission: PermissionState::Resolved { granted: true }, config: config(), ..Default::default() };
@@ -2672,14 +2710,14 @@ fn slow_heartbeat_survives_a_long_sustained_busy_period() {
     let busy = rt.status_pipe(&payload_json(7, "running"));
     sim.schedule_from(&busy.effects);
 
-    // Sustain Fast for 200 virtual seconds (>> the 60s Slow deadline) of
+    // Sustain Animation for 200 fires (>> the 60s Slow deadline) of
     // pure timer-driven work — no further domain events.
     for _ in 0..200 {
         let Some(elapsed) = sim.pop() else { panic!("starved mid-burst") };
         let out = rt.timer(PermissionProbe::default(), elapsed, sim.now_epoch_s());
         sim.schedule_from(&out.effects);
     }
-    assert_eq!(rt.timer_chain.armed(), Some(Cadence::Fast), "setup: still busy at t=200s");
+    assert_eq!(rt.timer_chain.armed(), Some(Cadence::Animation), "setup: still busy after 200 fires");
 
     let done = rt.status_pipe(&payload_json(7, "done"));
     sim.schedule_from(&done.effects);
@@ -2690,9 +2728,9 @@ fn slow_heartbeat_survives_a_long_sustained_busy_period() {
 }
 
 #[test]
-fn sustained_fast_cadence_with_unchanged_content_still_heartbeats_presence() {
-    // The Fast-starvation case itself: a long-Running agent pins the chain
-    // at Fast via `needs_fast_ticks` while its presence content never moves
+fn sustained_animation_cadence_with_unchanged_content_still_heartbeats_presence() {
+    // The animation-starvation case itself: a long-Running agent pins the chain
+    // at Animation while its presence content never moves
     // (running stays 1), so neither `project`'s content-edge gate nor a Slow
     // fire (there are none) ever rewrites the presence file. Without the
     // level-triggered heartbeat, after `sessions::STALE_AFTER_SECS` (90s)
@@ -2705,26 +2743,26 @@ fn sustained_fast_cadence_with_unchanged_content_still_heartbeats_presence() {
     sim.schedule_from(&named.effects);
     drive_tabs_and_panes(&mut rt);
 
-    // The Running edge publishes once (content edge) and pins Fast; from
+    // The Running edge publishes once (content edge) and pins Animation; from
     // here the presence content never changes again. The shared drive
     // (`assert_heartbeats_for`) pins the write gaps under the 90s staleness
-    // window while the run stays Fast-pinned — this test's extras: it DID
-    // stay Fast-pinned (otherwise the starving case was never exercised)
+    // window while the run stays Animation-pinned — this test's extras: it DID
+    // stay Animation-pinned (otherwise the starving case was never exercised)
     // and the heartbeat repeated.
     let busy = rt.status_pipe(&payload_json(7, "running"));
     sim.schedule_from(&busy.effects);
-    assert_eq!(rt.timer_chain.armed(), Some(Cadence::Fast), "setup: running pins Fast");
+    assert_eq!(rt.timer_chain.armed(), Some(Cadence::Animation), "setup: running pins Animation");
 
     let heartbeats = assert_heartbeats_for(&mut rt, &mut sim, 4);
     assert_eq!(
         rt.timer_chain.armed(),
-        Some(Cadence::Fast),
-        "setup: the whole run must have stayed Fast-pinned — otherwise this \
+        Some(Cadence::Animation),
+        "setup: the whole run must have stayed Animation-pinned — otherwise this \
          never exercised the starving case"
     );
     assert!(
         heartbeats >= 2,
-        "expected repeated Fast-cadence heartbeats across 4 virtual minutes, got {heartbeats}"
+        "expected repeated animation-cadence heartbeats across 4 virtual minutes, got {heartbeats}"
     );
 }
 

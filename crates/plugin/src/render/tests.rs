@@ -141,6 +141,7 @@ fn ro(width: usize, now_tick: u64) -> RenderOpts {
         width,
         height: 100,
         now_tick,
+        animation_frame: now_tick,
         glyphs: GlyphSet::Plain,
         header: true,
         density: crate::config::Density::Compact,
@@ -3845,11 +3846,11 @@ fn tab_name_column_is_fixed_across_active_and_inactive() {
 
 #[test]
 fn spinner_eases_after_ten_minutes() {
-    assert_eq!(spin_glyph(100, 0), crate::status::working_spin(100));
+    assert_eq!(spin_glyph(100, 100, 0), crate::status::working_spin(100));
     let t = EASE_AFTER_TICKS + 100;
-    assert_eq!(spin_glyph(t, 0), crate::status::working_spin(((t / 4) % 2) as usize));
-    assert_ne!(spin_glyph(t, 0), spin_glyph(t + 4, 0), "still blinks — alive, just calm");
-    assert_eq!(spin_glyph(t, 0), spin_glyph(t + 1, 0), "but not every tick");
+    assert_eq!(spin_glyph(t, t * 2, 0), crate::status::working_spin(((t / 4) % 2) as usize));
+    assert_ne!(spin_glyph(t, t * 2, 0), spin_glyph(t + 4, (t + 4) * 2, 0), "still blinks — alive, just calm");
+    assert_eq!(spin_glyph(t, t * 2, 0), spin_glyph(t + 1, (t + 1) * 2, 0), "but not every tick");
 }
 
 #[test]
@@ -3860,12 +3861,12 @@ fn spin_glyph_ease_boundary_is_strictly_greater_than() {
     // very next tick crosses into the eased two-frame blink. This pins the
     // spec's "older than" reading of the threshold, not "at least as old as".
     assert_eq!(
-        spin_glyph(EASE_AFTER_TICKS, 0),
+        spin_glyph(EASE_AFTER_TICKS, EASE_AFTER_TICKS * 2, 0),
         crate::status::working_spin(EASE_AFTER_TICKS as usize),
         "exactly at the threshold is still full speed"
     );
     assert_eq!(
-        spin_glyph(EASE_AFTER_TICKS + 1, 0),
+        spin_glyph(EASE_AFTER_TICKS + 1, (EASE_AFTER_TICKS + 1) * 2, 0),
         crate::status::working_spin((((EASE_AFTER_TICKS + 1) / 4) % 2) as usize),
         "one tick past the threshold is already eased"
     );
@@ -3886,7 +3887,7 @@ fn running_row_eases_to_slow_blink_after_long_runner_threshold() {
     let opts = tight(&rows, ro(40, now));
     let out = render(&rows, &opts);
     let grid = strip_sgr(&out);
-    let expected = spin_glyph(now, 0);
+    let expected = spin_glyph(now, now * 2, 0);
     let full_speed = crate::status::working_spin(now as usize);
     assert_ne!(
         expected, full_speed,

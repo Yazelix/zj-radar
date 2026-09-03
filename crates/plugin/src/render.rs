@@ -74,22 +74,22 @@ const SERVICE_GLYPH: char = '▸';
 /// Status glyph for a Running row: services hold [`SERVICE_GLYPH`], jobs spin
 /// (easing to a slow blink — see [`spin_glyph`]). The single owner of the
 /// service/job glyph split, shared by the tab header and the pane lines.
-fn running_glyph(kind: Kind, now_tick: u64, since_tick: u64) -> char {
+fn running_glyph(kind: Kind, now_tick: u64, animation_frame: u64, since_tick: u64) -> char {
     if kind.is_service() {
         SERVICE_GLYPH
     } else {
-        spin_glyph(now_tick, since_tick)
+        spin_glyph(now_tick, animation_frame, since_tick)
     }
 }
 
 /// Spinner frame for a Running glyph: full speed normally; after
 /// EASE_AFTER_TICKS a slow two-frame blink (advances every 4th tick) — a
 /// long-runner signals "still going, nothing new" instead of anxiety.
-fn spin_glyph(now_tick: u64, since_tick: u64) -> char {
+fn spin_glyph(now_tick: u64, animation_frame: u64, since_tick: u64) -> char {
     if now_tick.saturating_sub(since_tick) > EASE_AFTER_TICKS {
         crate::status::working_spin(((now_tick / 4) % 2) as usize)
     } else {
-        crate::status::working_spin(now_tick as usize)
+        crate::status::working_spin(animation_frame as usize)
     }
 }
 
@@ -133,7 +133,10 @@ impl std::fmt::Display for Seg<'_> {
 pub struct RenderOpts {
     pub width: usize,
     pub height: usize,
+    /// One-second lifecycle clock used for run age and long-runner easing.
     pub now_tick: u64,
+    /// 500 ms visual clock used only by moving glyphs and decoration.
+    pub animation_frame: u64,
     pub glyphs: GlyphSet,
     /// Whether to render the " RADAR" identity header block.
     pub header: bool,
@@ -707,7 +710,7 @@ fn tab_header_line(row: &TabRow, opts: &RenderOpts, tab_target: &RailTarget) -> 
         let detail = row.display.detail.as_ref();
         let since_tick = detail.map(|d| d.since_tick).unwrap_or(now_tick);
         let kind = detail.map(|d| d.kind).unwrap_or(Kind::Other);
-        running_glyph(kind, now_tick, since_tick)
+        running_glyph(kind, now_tick, opts.animation_frame, since_tick)
     } else {
         st.glyph_for(opts.glyphs)
     };
@@ -1077,7 +1080,7 @@ fn emit_pane_line(
     let status = pane.render_status();
     let glyph = if status == Status::Running {
         let since_tick = pane.since_tick().unwrap_or(opts.now_tick);
-        running_glyph(pane.kind(), opts.now_tick, since_tick)
+        running_glyph(pane.kind(), opts.now_tick, opts.animation_frame, since_tick)
     } else {
         status.glyph_for(opts.glyphs)
     };
@@ -1369,7 +1372,7 @@ fn render_header(rows: &[TabRow], opts: &RenderOpts, overflow: bool, has_content
     // Header line 2: rule across the full width — only in non-Cards densities.
     if opts.density != Density::Cards {
         lines.push(Line::new(
-            format!("{}\n", header_rule(width, opts.now_tick, working, accent)),
+            format!("{}\n", header_rule(width, opts.animation_frame, working, accent)),
             None,
             LineBg::Rail,
         ));

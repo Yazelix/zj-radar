@@ -80,10 +80,11 @@ Ties in the tab-level roll-up: on equal severity a bounded job outranks a
 service as the tab's primary detail — a spinning build summarizes the tab
 better than a server that is merely up.
 
-Cadence rule, restated per class: only *animating* work
+Cadence rule, restated per class: *animating* work
 (`TrackedObservation::animating` = Running minus `Service`, so agent rows
-animate too) plus **scheduled
-one-shots** keep the 1 Hz timer armed — the one-shots being promotable
+animate too) uses a 2 Hz visual clock matching Zellij's 500 ms loading
+animation. Every second frame advances the 1 Hz domain clock. **Scheduled
+one-shots** keep that 1 Hz clock armed — the one-shots being promotable
 pendings awaiting debounce, tentative-Dones awaiting confirm
 (`pending_done`), stale-Running grace clocks (`suspect_running`), unsettled
 notifications, flashes, and Done-awaiting-recede. The one-shots must count
@@ -93,7 +94,7 @@ server still needs its Done confirm (and a killed `server`-source producer
 its ghost-expiry) within seconds, not on the ≤60s Slow heartbeat. `Service`
 and `Companion` rows themselves never pin fast cadence — a dev server or an
 open editor left overnight costs zero ticks. Note the long-runner *easing*
-does not save cadence — an eased spinner still repaints every 4th tick — so
+does not save cadence — an eased spinner still needs domain ticks — so
 Service relief comes only from the steady mark plus the `animating` term.
 
 One behavior delta reviewers should expect: closing nvim in a shell pane no

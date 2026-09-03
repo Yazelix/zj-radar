@@ -617,6 +617,7 @@ fn build(input: &str) -> (Vec<TabRow>, Vec<crate::rollup::LedgerLine>, RenderOpt
         width,
         height,
         now_tick,
+        animation_frame: now_tick,
         glyphs,
         header: true,
         density,
@@ -705,4 +706,3 @@ fn rail_reference_matches() {
         failures.join("\n\n")
     );
 }
-

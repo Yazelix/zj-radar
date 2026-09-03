@@ -339,12 +339,15 @@ and `Kind::from_source`, pinned by `source_round_trips_through_kind`.
 
 ## 8. Timer and cadence
 
-Zellij's timer is one-shot, so the plugin re-arms it each tick at one of two
-speeds or not at all (`PluginRuntime::desired_cadence`):
+Zellij's timer is one-shot, so the plugin re-arms it at one of three speeds or
+not at all (`PluginRuntime::desired_cadence`):
 
-- **Fast (1 Hz)** while there is tick-windowed work: the permission flow still
-  live; a spinning glyph (`TrackedObservation::animating`, Running and not a
-  service); an un-carried completion edge (a status-pipe notify deferred to
+- **Animation (2 Hz)** while a glyph spins (`TrackedObservation::animating`,
+  Running and not a service). This matches Zellij's own 500 ms loading-animation
+  cadence. Every second frame advances the separate 1 Hz domain clock, so the
+  deadlines below keep their wall time.
+- **Fast (1 Hz)** while there is non-visual tick-windowed work: the permission
+  flow still live; an un-carried completion edge (a status-pipe notify deferred to
   the timer because its own focus cannot be trusted, see *Settle* in
   CONTEXT.md); a command `Done` awaiting its TTL recede; an active flash; a
   pending cross-session cycle selection awaiting its idle-commit; and the
@@ -358,9 +361,10 @@ speeds or not at all (`PluginRuntime::desired_cadence`):
   session name and every age has saturated) and denied (a permission-denied
   rail disarms unconditionally, since no clearing event will ever arrive).
 
-Service and interactive rows never pin Fast. A dev server or an editor left
-open overnight costs zero ticks. A backgrounded `done`/`error`/`pending` row
-is terminal: once its one-shot settle has run it does not keep Fast alive.
+Service and interactive rows never pin Animation. A dev server or an editor
+left open overnight costs zero fast ticks. A backgrounded
+`done`/`error`/`pending` row is terminal: once its one-shot settle has run it
+does not keep Fast alive.
 
 ## 9. Render gate
 
