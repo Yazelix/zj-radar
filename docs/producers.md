@@ -40,6 +40,8 @@ This adds command hooks to `hooks.json` under `$CODEX_HOME` (default
 `~/.codex`) that call `zj-radar notify codex`. Hooks are additive, so an
 existing Codex `notify` program is preserved. After installing or changing the
 hooks, run `/hooks` inside Codex once to review and trust them.
+`zj-radar setup codex --check` also reports any zj-radar hook disabled through
+that screen; it never changes enablement or trust.
 
 Setup removes explicit disablement only from its own hook entries and leaves
 their trust hashes unchanged. On POSIX, the generated hook exits successfully

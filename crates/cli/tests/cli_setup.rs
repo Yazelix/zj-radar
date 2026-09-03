@@ -143,6 +143,52 @@ fn setup_codex_hooks_is_idempotent() {
     assert!(config.contains("trusted_hash = \"sha256:existing\""));
 }
 
+#[test]
+fn setup_codex_check_reports_disabled_owned_hooks_without_repairing_them() {
+    let codex_home = isolated_codex_home();
+    let hooks_path = codex_home.path().join("hooks.json");
+    let shim = ShimDir::new();
+    shim.add_recorder("codex");
+    shim.add_recorder("zj-radar");
+    Command::cargo_bin("zj-radar")
+        .unwrap()
+        .args(["setup", "codex", "--yes"])
+        .env("CODEX_HOME", codex_home.path())
+        .env("PATH", shim.path_env())
+        .assert()
+        .success();
+    fs::write(
+        codex_home.path().join("config.toml"),
+        format!(
+            "[hooks.state.\"{}:stop:0:0\"]\nenabled = false\ntrusted_hash = \"sha256:existing\"\n",
+            hooks_path.display()
+        ),
+    )
+    .unwrap();
+
+    let output = Command::cargo_bin("zj-radar")
+        .unwrap()
+        .args(["setup", "codex", "--check"])
+        .env("CODEX_HOME", codex_home.path())
+        .env("PATH", shim.path_env())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("warn hook enablement: one or more zj-radar hooks are disabled"),
+        "disabled hook warning missing from check:\n{stdout}"
+    );
+    let config = fs::read_to_string(codex_home.path().join("config.toml")).unwrap();
+    assert!(config.contains("enabled = false"), "read-only check repaired the hook");
+    assert!(
+        config.contains("trusted_hash = \"sha256:existing\""),
+        "read-only check changed trust"
+    );
+}
+
 // ── codex hook guidance mentions disabled hooks when config says so ───────────
 //
 // `print_codex_hook_guidance` writes the `hooks appear disabled` warning to

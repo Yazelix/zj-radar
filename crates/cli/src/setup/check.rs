@@ -56,13 +56,28 @@ impl CheckItem {
 /// process exit code, so `zj-radar setup --check && zj-radar run` can gate.
 /// Warns don't fail: they're advice, not a broken install.
 pub(crate) fn check_codex(legacy_notify: bool) -> bool {
+    let config_text = codex_config_path().and_then(|p| std::fs::read_to_string(p).ok());
+    let hooks_path = codex_hooks_path();
+    let hooks_text = hooks_path.as_ref().and_then(|p| std::fs::read_to_string(p).ok());
     let env = CodexEnv {
         codex_on_path:    which("codex"),
         zj_radar_on_path: which("zj-radar"),
-        config_text:      codex_config_path().and_then(|p| std::fs::read_to_string(p).ok()),
-        hooks_text:       codex_hooks_path().and_then(|p| std::fs::read_to_string(p).ok()),
+        config_text:      config_text.clone(),
+        hooks_text:       hooks_text.clone(),
     };
-    let items = codex_check_items(&analyze_codex(&env), legacy_notify);
+    let mut items = codex_check_items(&analyze_codex(&env), legacy_notify);
+    if !legacy_notify
+        && matches!(
+            (config_text, hooks_path, hooks_text),
+            (Some(config), Some(path), Some(hooks))
+                if matches!(edit_codex_hook_enablement(&config, &path, &hooks), Ok(Outcome::Changed(_)))
+        )
+    {
+        items.push(CheckItem::warn(
+            "hook enablement",
+            "one or more zj-radar hooks are disabled; run `zj-radar setup codex -y` to re-enable them",
+        ));
+    }
     println!("codex:");
     print_check_items(&items)
 }
