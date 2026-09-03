@@ -97,7 +97,7 @@ hear from). One command per agent:
 
 ```sh
 zj-radar setup claude   # installs the zj-radar-claude plugin via Claude Code's marketplace
-zj-radar setup codex    # wires Codex hooks — then run `/hooks` inside Codex to trust them
+zj-radar setup codex    # wires and enables its hooks — then review them with `/hooks` in Codex
 ```
 
 (Prefer Claude Code's own UI? `/plugin install zj-radar-claude@zj-radar` inside

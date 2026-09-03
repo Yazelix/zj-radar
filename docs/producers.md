@@ -63,7 +63,11 @@ cargo install zj-radar
   Both take the same flags: `--dry-run` to preview, `--uninstall` to remove
   only zj-radar's wiring, and `--check` to diagnose the current setup. After
   installing or changing hooks, run `/hooks` inside Codex once to review and
-  trust the command hook.
+  trust the command hooks. Explicit setup also removes `enabled = false` only
+  from zj-radar-owned hook state; Codex remains the sole owner of their trust
+  hashes. The generated POSIX hook quietly does nothing when `zj-radar` is not
+  on `PATH`, so the same global Codex configuration is safe outside a Radar
+  environment.
 - **`zj-radar setup codex --legacy-notify`** — opt-in fallback for older Codex
   setups that only support the single `notify` program. It refuses to replace a
   foreign notifier unless `--force` is also passed.
@@ -84,6 +88,8 @@ writes one entry per event across seven hook events (`UserPromptSubmit`,
 5 s of headroom, so Codex's hook runner never races the bounded send (see
 [below](#writing-your-own-producer)) — a `commandWindows` variant, and the
 `ZJ_RADAR_CODEX_HOOK=v1` marker that idempotency and `--uninstall` key on.
+The POSIX command checks for `zj-radar` before invoking it and preserves a real
+`notify` failure when the binary is present.
 
 ## Any script: `zj-radar notify generic`
 

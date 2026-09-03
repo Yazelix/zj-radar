@@ -448,7 +448,9 @@ the normal `cwd_changed` path):
   Notification, `done` via Stop). The bundled hooks auto-register — no `settings.json` editing.
 - **Codex CLI** — `zj-radar setup codex` installs marker-owned command hooks in
   `~/.codex/hooks.json`; Codex sends hook JSON on stdin and `zj-radar notify codex`
-  maps lifecycle events to `running`/`pending`/`done`. The legacy single-slot
+  maps lifecycle events to `running`/`pending`/`done`. Explicit setup enables
+  only those marker-owned hooks without changing Codex trust, and their POSIX
+  commands no-op when the CLI is absent. The legacy single-slot
   `config.toml` `notify` path remains available behind `--legacy-notify` for older
   Codex installs and can only emit `done`.
 - **Aider** — parked (one-line `--notifications-command`, status-only) for a later phase.
