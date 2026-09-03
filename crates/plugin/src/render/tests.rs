@@ -490,7 +490,7 @@ fn working_glyph_spins_with_tick() {
     let f0 = render(&[row(0)], &ro(30, 0));
     let f1 = render(&[row(1)], &ro(30, 1));
     assert!(f0.contains('⠋'));
-    assert!(f1.contains('⠙'));
+    assert!(f1.contains('⠸'));
 }
 
 #[test]

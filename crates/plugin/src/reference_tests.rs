@@ -233,7 +233,7 @@ fn build(input: &str) -> (Vec<TabRow>, Vec<crate::rollup::LedgerLine>, RenderOpt
         }
         // Render tick: `now_tick <N>` (default 0). Statuses apply at tick 0,
         // so this IS the elapsed-ticks knob for the long-job `· Nm` run tag —
-        // pick a multiple of the spinner cycle (10) so working glyphs stay ⠋.
+        // pick a multiple of the spinner cycle (4) so working glyphs stay ⠋.
         if let Some(rest) = line.strip_prefix("now_tick ") {
             if let Ok(n) = rest.trim().parse::<u64>() {
                 now_tick = n;
