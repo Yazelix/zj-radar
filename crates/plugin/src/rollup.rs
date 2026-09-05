@@ -170,8 +170,7 @@ impl PaneDisplay {
     }
 
     /// The tick this pane's status last changed (`None` for an untracked
-    /// pane, which has no observation to date it from). Feeds `spin_glyph`'s
-    /// long-runner easing in `render.rs`.
+    /// pane, which has no observation to date it from). Dates the running age tag.
     pub(crate) fn since_tick(&self) -> Option<u64> {
         match self {
             Self::Tracked { since_tick, .. } => Some(*since_tick),

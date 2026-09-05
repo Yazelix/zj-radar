@@ -82,9 +82,9 @@ better than a server that is merely up.
 
 Cadence rule, restated per class: *animating* work
 (`TrackedObservation::animating` = Running minus `Service`, so agent rows
-animate too) uses a 5 Hz visual clock. Every fifth frame advances the 1 Hz
-domain clock. **Scheduled
-one-shots** keep that 1 Hz clock armed — the one-shots being promotable
+animate too) uses a 5 Hz visual clock for the full run, regardless of its age.
+Every fifth frame advances the 1 Hz domain clock. **Scheduled one-shots**
+keep that 1 Hz clock armed — the one-shots being promotable
 pendings awaiting debounce, tentative-Dones awaiting confirm
 (`pending_done`), stale-Running grace clocks (`suspect_running`), unsettled
 notifications, flashes, and Done-awaiting-recede. The one-shots must count
@@ -93,9 +93,8 @@ is Running" was an implicit tick source for all of them, and a Ctrl-C'd dev
 server still needs its Done confirm (and a killed `server`-source producer
 its ghost-expiry) within seconds, not on the ≤60s Slow heartbeat. `Service`
 and `Companion` rows themselves never pin fast cadence — a dev server or an
-open editor left overnight costs zero ticks. Note the long-runner *easing*
-does not save cadence — an eased spinner still needs domain ticks — so
-Service relief comes only from the steady mark plus the `animating` term.
+open editor left overnight costs zero ticks. Service relief comes from the
+steady mark plus the `animating` term.
 
 One behavior delta reviewers should expect: closing nvim in a shell pane no
 longer fires a "done — nvim" notification (no observation ever exists); a

@@ -3842,65 +3842,27 @@ fn tab_name_column_is_fixed_across_active_and_inactive() {
     assert_eq!(cols[0], cols[1], "active and inactive tab names must start at the same column:\n{ansi}");
 }
 
-// ── Long-runner easing ─────────────────────────────────────────────────────
-
 #[test]
-fn spinner_eases_after_ten_minutes() {
-    assert_eq!(spin_glyph(100, 100, 0), crate::status::working_spin(100));
-    let t = EASE_AFTER_TICKS + 100;
-    assert_eq!(spin_glyph(t, t * 2, 0), crate::status::working_spin(((t / 4) % 2) as usize));
-    assert_ne!(spin_glyph(t, t * 2, 0), spin_glyph(t + 4, (t + 4) * 2, 0), "still blinks — alive, just calm");
-    assert_eq!(spin_glyph(t, t * 2, 0), spin_glyph(t + 1, (t + 1) * 2, 0), "but not every tick");
-}
-
-#[test]
-fn spin_glyph_ease_boundary_is_strictly_greater_than() {
-    // The condition is `now_tick.saturating_sub(since_tick) > EASE_AFTER_TICKS`
-    // — strict, not `>=`. So a run exactly EASE_AFTER_TICKS old is still
-    // "younger than" the threshold and gets the full-speed spinner; only the
-    // very next tick crosses into the eased two-frame blink. This pins the
-    // spec's "older than" reading of the threshold, not "at least as old as".
-    assert_eq!(
-        spin_glyph(EASE_AFTER_TICKS, EASE_AFTER_TICKS * 2, 0),
-        crate::status::working_spin(EASE_AFTER_TICKS as usize),
-        "exactly at the threshold is still full speed"
-    );
-    assert_eq!(
-        spin_glyph(EASE_AFTER_TICKS + 1, (EASE_AFTER_TICKS + 1) * 2, 0),
-        crate::status::working_spin((((EASE_AFTER_TICKS + 1) / 4) % 2) as usize),
-        "one tick past the threshold is already eased"
-    );
-}
-
-#[test]
-fn running_row_eases_to_slow_blink_after_long_runner_threshold() {
-    // A Running row whose since_tick is far in the past (> EASE_AFTER_TICKS)
-    // must render the eased two-frame blink glyph on line 1, not the
-    // full-speed spinner — a strip_sgr grid check, per the brief.
-    let now = EASE_AFTER_TICKS + 100;
-    let detail = PrimaryDetail { kind: Kind::Build, ..pd("r", "b", "long build", Status::Running) };
-    let row = tab(1, "runner", display(Status::Running, 0, 1, Some(detail)));
-    // `tight` drops the bottom-region footer (whose own tally spinner isn't
-    // eased by this task and would otherwise pollute the full-speed check
-    // below), leaving exactly the header + this row's card lines.
-    let rows = [row];
-    let opts = tight(&rows, ro(40, now));
-    let out = render(&rows, &opts);
-    let grid = strip_sgr(&out);
-    let expected = spin_glyph(now, now * 2, 0);
-    let full_speed = crate::status::working_spin(now as usize);
-    assert_ne!(
-        expected, full_speed,
-        "sanity: the threshold must actually change the glyph at this tick"
-    );
-    assert!(
-        grid.contains(expected),
-        "eased glyph must appear in the rendered row:\n{grid}"
-    );
-    assert!(
-        !grid.contains(full_speed),
-        "full-speed glyph must not leak through once eased:\n{grid}"
-    );
+fn running_headers_and_panes_keep_full_speed_regardless_of_age() {
+    for kind in [Kind::Build, Kind::Codex, Kind::Server] {
+        for age in [0, 600, 601, 3_600, 86_400] {
+            let detail = PrimaryDetail { kind, since_tick: 100,
+                ..pd("r", "b", "working", Status::Running) };
+            let rows = [tab(1, "runner", display(Status::Running, 0, 1, Some(detail)))];
+            for (frame, spinning) in "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏⠋".chars().enumerate() {
+                let opts = tight(&rows, RenderOpts { animation_frame: frame as u64,
+                    ..ro(40, 100 + age) });
+                let grid = strip_sgr(&render(&rows, &opts));
+                let expected = if kind == Kind::Server { '▸' } else { spinning };
+                let header = grid.lines().find(|line| line.contains("1 runner")).unwrap();
+                let pane = grid.lines().find(|line| line.contains("working")).unwrap();
+                for line in [header, pane] {
+                    assert!(line.contains(expected),
+                        "{kind:?}, age {age}, frame {frame}: expected {expected} in {line:?}");
+                }
+            }
+        }
+    }
 }
 
 // ── Cross-session badge ─────────────────────────────────────────────────────

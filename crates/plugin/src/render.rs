@@ -37,20 +37,6 @@ use layout::*;
 const RESET: &str = "\x1b[0m";
 const BOLD: &str = "\x1b[1m";
 
-/// Ticks a Running pane/tab must sit at the SAME `since_tick` before its
-/// spinner eases from full speed to a slow two-frame blink (see
-/// `spin_glyph`). 600 ticks — the tick-driven render clock isn't wall-clock
-/// 1:1, but at typical UI tick rates this reads as "on the order of minutes".
-/// Honest only because `since_tick` is honest: `StatusStore::apply` preserves
-/// `last_change_tick` across a same-status re-broadcast
-/// (`status_store.rs::apply_sets_last_change_tick_only_on_status_change`) and
-/// `CommandStore` preserves it across a same-command re-promotion
-/// (`promotion_preserves_running_since_for_same_command`,
-/// `crates/core/src/command.rs`) — so a long-runner's `since_tick` reflects
-/// when the work truly started, not the last time it happened to re-announce
-/// itself.
-pub const EASE_AFTER_TICKS: u64 = 600;
-
 /// Most pane lines a multi-pane tab renders before folding the remainder into
 /// a single `+N more` line — the ⟦D6⟧ cap (rail-reference.md: high on
 /// purpose, so the common case never folds).
@@ -71,23 +57,11 @@ const TREE_PREFIX_COLS: usize = 3;
 /// cadence predicates count only `TrackedObservation::animating` rows.
 const SERVICE_GLYPH: char = '▸';
 
-/// Status glyph for a Running row: services hold [`SERVICE_GLYPH`], jobs spin
-/// (easing to a slow blink — see [`spin_glyph`]). The single owner of the
-/// service/job glyph split, shared by the tab header and the pane lines.
-fn running_glyph(kind: Kind, now_tick: u64, animation_frame: u64, since_tick: u64) -> char {
+/// Status glyph for a Running row: services stay steady, jobs and agents spin.
+/// Shared by tab headers and pane lines; elapsed work time never slows a frame.
+fn running_glyph(kind: Kind, animation_frame: u64) -> char {
     if kind.is_service() {
         SERVICE_GLYPH
-    } else {
-        spin_glyph(now_tick, animation_frame, since_tick)
-    }
-}
-
-/// Spinner frame for a Running glyph: full speed normally; after
-/// EASE_AFTER_TICKS a slow two-frame blink (advances every 4th tick) — a
-/// long-runner signals "still going, nothing new" instead of anxiety.
-fn spin_glyph(now_tick: u64, animation_frame: u64, since_tick: u64) -> char {
-    if now_tick.saturating_sub(since_tick) > EASE_AFTER_TICKS {
-        crate::status::working_spin(((now_tick / 4) % 2) as usize)
     } else {
         crate::status::working_spin(animation_frame as usize)
     }
@@ -688,7 +662,6 @@ fn tab_header_line(row: &TabRow, opts: &RenderOpts, tab_target: &RailTarget) -> 
         .then(|| HotspotAction::Acknowledge { target: tab_target.clone() });
     let hotspot = HotspotSlot::new(opts.width, TAB_HEADER_HOTSPOT_MIN, hotspot);
     let width = hotspot.content_width();
-    let now_tick = opts.now_tick;
     let st = row.display.status;
 
     // Status HUES are always ANSI-16 role codes so the terminal renders them in
@@ -704,13 +677,11 @@ fn tab_header_line(row: &TabRow, opts: &RenderOpts, tab_target: &RailTarget) -> 
     // start at fixed columns; `▌` when active, plain space otherwise.
     let bar = spine_seg(row.active, st);
 
-    // col 1: status glyph (working spins; eases to a slow blink for
-    // long-runners — see `spin_glyph`).
+    // col 1: status glyph (working spins; services stay steady).
     let glyph_char = if st == Status::Running {
         let detail = row.display.detail.as_ref();
-        let since_tick = detail.map(|d| d.since_tick).unwrap_or(now_tick);
         let kind = detail.map(|d| d.kind).unwrap_or(Kind::Other);
-        running_glyph(kind, now_tick, opts.animation_frame, since_tick)
+        running_glyph(kind, opts.animation_frame)
     } else {
         st.glyph_for(opts.glyphs)
     };
@@ -1079,8 +1050,7 @@ fn emit_pane_line(
     let mark_w = UnicodeWidthChar::width(mark).unwrap_or(1);
     let status = pane.render_status();
     let glyph = if status == Status::Running {
-        let since_tick = pane.since_tick().unwrap_or(opts.now_tick);
-        running_glyph(pane.kind(), opts.now_tick, opts.animation_frame, since_tick)
+        running_glyph(pane.kind(), opts.animation_frame)
     } else {
         status.glyph_for(opts.glyphs)
     };
