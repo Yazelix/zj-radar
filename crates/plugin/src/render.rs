@@ -57,11 +57,13 @@ const TREE_PREFIX_COLS: usize = 3;
 /// cadence predicates count only `TrackedObservation::animating` rows.
 const SERVICE_GLYPH: char = '▸';
 
-/// Status glyph for a Running row: services stay steady, jobs and agents spin.
-/// Shared by tab headers and pane lines; elapsed work time never slows a frame.
-fn running_glyph(kind: Kind, animation_frame: u64) -> char {
+/// Shared Running glyph: jobs and agents spin for 30 minutes, then hold ⠿.
+/// The observation owns the run's start; unknown age keeps the spinner.
+fn running_glyph(kind: Kind, animation_frame: u64, now_tick: u64, since_tick: Option<u64>) -> char {
     if kind.is_service() {
         SERVICE_GLYPH
+    } else if since_tick.is_some_and(|since| now_tick.saturating_sub(since) >= 30 * 60) {
+        '⠿'
     } else {
         crate::status::working_spin(animation_frame as usize)
     }
@@ -681,7 +683,7 @@ fn tab_header_line(row: &TabRow, opts: &RenderOpts, tab_target: &RailTarget) -> 
     let glyph_char = if st == Status::Running {
         let detail = row.display.detail.as_ref();
         let kind = detail.map(|d| d.kind).unwrap_or(Kind::Other);
-        running_glyph(kind, opts.animation_frame)
+        running_glyph(kind, opts.animation_frame, opts.now_tick, detail.map(|d| d.since_tick))
     } else {
         st.glyph_for(opts.glyphs)
     };
@@ -1050,7 +1052,7 @@ fn emit_pane_line(
     let mark_w = UnicodeWidthChar::width(mark).unwrap_or(1);
     let status = pane.render_status();
     let glyph = if status == Status::Running {
-        running_glyph(pane.kind(), opts.animation_frame)
+        running_glyph(pane.kind(), opts.animation_frame, opts.now_tick, pane.since_tick())
     } else {
         status.glyph_for(opts.glyphs)
     };

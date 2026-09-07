@@ -3843,24 +3843,71 @@ fn tab_name_column_is_fixed_across_active_and_inactive() {
 }
 
 #[test]
-fn running_headers_and_panes_keep_full_speed_regardless_of_age() {
+fn running_headers_and_panes_become_static_after_thirty_minutes() {
     for kind in [Kind::Build, Kind::Codex, Kind::Server] {
-        for age in [0, 600, 601, 3_600, 86_400] {
+        for age in [0, 600, 1_799, 1_800, 1_801, 3_600, 86_400] {
             let detail = PrimaryDetail { kind, since_tick: 100,
                 ..pd("r", "b", "working", Status::Running) };
             let rows = [tab(1, "runner", display(Status::Running, 0, 1, Some(detail)))];
             for (frame, spinning) in "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏⠋".chars().enumerate() {
                 let opts = tight(&rows, RenderOpts { animation_frame: frame as u64,
                     ..ro(40, 100 + age) });
-                let grid = strip_sgr(&render(&rows, &opts));
-                let expected = if kind == Kind::Server { '▸' } else { spinning };
-                let header = grid.lines().find(|line| line.contains("1 runner")).unwrap();
-                let pane = grid.lines().find(|line| line.contains("working")).unwrap();
+                let ansi = render(&rows, &opts);
+                let expected = if kind == Kind::Server { '▸' }
+                    else if age >= 1_800 { '⠿' } else { spinning };
+                let header = ansi.lines().find(|line| line.contains("1 runner")).unwrap();
+                let pane = ansi.lines().find(|line| line.contains("working")).unwrap();
                 for line in [header, pane] {
-                    assert!(line.contains(expected),
-                        "{kind:?}, age {age}, frame {frame}: expected {expected} in {line:?}");
+                    assert!(line.contains(&format!("\x1b[33m\x1b[1m{expected}")),
+                        "{kind:?}, age {age}, frame {frame}: expected yellow {expected} in {line:?}");
                 }
             }
+        }
+    }
+    for since in [None, Some(10_000)] {
+        for frame in 0..10 {
+            assert_eq!(running_glyph(Kind::Codex, frame, 9_999, since),
+                crate::status::working_spin(frame as usize), "unknown or future start stays animated");
+        }
+    }
+}
+
+#[test]
+fn long_running_marker_follows_status_edges_and_primary_detail() {
+    use crate::payload::StatusPayload;
+    use crate::rollup::{roll_up, TerminalPane};
+    use crate::status_store::StatusStore;
+
+    let mut store = StatusStore::default();
+    let panes = [TerminalPane { id: 1, ..Default::default() },
+        TerminalPane { id: 2, ..Default::default() }];
+    let payload = |id, status, msg: &str| StatusPayload {
+        pane_id: id, status, msg: msg.into(), source: "codex".into(), ..Default::default()
+    };
+    store.apply(payload(1, Status::Running, "old"), 100, 0);
+    store.apply(payload(2, Status::Running, "young"), 1_850, 0);
+    // A same-status relabel keeps the old run's age and roll-up priority.
+    // Pending/Error still win; resuming or starting a new run resets its age.
+    for (tick, status, old_glyph, header_glyph, primary) in [
+        (1_899, Status::Running, '⠋', '⠋', "young"),
+        (1_900, Status::Running, '⠿', '⠋', "young"),
+        (1_901, Status::Pending, '◆', '◆', "old"),
+        (1_902, Status::Running, '⠋', '⠋', "old"),
+        (3_702, Status::Running, '⠿', '⠿', "old"),
+        (3_703, Status::Done, '●', '⠿', "young"),
+        (3_704, Status::Running, '⠋', '⠋', "old"),
+        (3_705, Status::Error, '✗', '✗', "old"),
+        (3_706, Status::Idle, '○', '⠿', "young"),
+    ] {
+        store.apply(payload(1, status, &format!("old {tick}")), tick, 0);
+        let display = roll_up(&panes, |id| store.get(id), |_| None);
+        assert!(display.detail.as_ref().unwrap().msg.starts_with(primary));
+        let rows = [tab(1, "mixed", display)];
+        let opts = tight(&rows, RenderOpts { animation_frame: 0, ..ro(48, tick) });
+        let grid = strip_sgr(&render(&rows, &opts));
+        for (label, glyph) in [("1 mixed", header_glyph), ("old", old_glyph)] {
+            let line = grid.lines().find(|line| line.contains(label)).unwrap();
+            assert!(line.contains(glyph), "tick {tick}: expected {glyph} in {line:?}");
         }
     }
 }

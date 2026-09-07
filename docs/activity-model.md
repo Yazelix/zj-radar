@@ -62,7 +62,7 @@ four readers.
 
 `Status` (Idle < Done < Running < Pending < Error, severity-ordered) is
 unchanged — it is the *wire and lifecycle* vocabulary and it is correct.
-Presentation is `f(Status, class)`:
+Presentation is `f(Status, class, run age)`:
 
 All cells below are **implemented** (the executable examples live in
 `docs/rail-reference.md` — scenarios AD/AE); only the upstream detection
@@ -70,19 +70,26 @@ signal (§4 layer 4) remains future work.
 
 | | `Job` | `Service` | `Companion` |
 |---|---|---|---|
-| **Running** | `⠋` spinner + activity string; `· 4m` run tag once ≥ 1 minute (whole minutes, frozen at `1h+`; the true start survives re-promotions) | steady non-animated `▸` mark + name, **no spinner, no fast cadence** | *never enters Running* — suppressed at intake (§5); renders the muted identity label (`○ $ nvim README.md`) |
+| **Running** | `⠋` spinner for the first 30 minutes, then static yellow `⠿` + activity string; `· 4m` run tag once ≥ 1 minute (whole minutes, frozen at `1h+`; the true start survives re-promotions) | steady non-animated `▸` mark + name, **no spinner, no fast cadence** | *never enters Running* — suppressed at intake (§5); renders the muted identity label (`○ $ nvim README.md`) |
 | **Done** | `●` + ledger hand-off, TTL recede to Idle, notify | exit of a service — `●`/`✗` per exit code, notify: a dead dev server is news | labeled completion (`● $ nvim`) via preserved identity for held/run panes; recede as Job |
 | **Error** | `✗`, persists until re-run, notify | same | same |
 | **Pending** | agent-origin only: `◆` waiting-for-you + wait-age tag | n/a | n/a |
 | **Idle** | muted row if `ever_active` | muted row | muted identity label while the program is foreground (it also replaces a stale finished-command echo); nothing once it exits |
+
+Agents share the 30-minute glyph rule. `⠿` means long-running work, not done or
+stale. One continuous Running episode owns the age: repeated updates preserve
+its start, a return to Running after another status restarts it, and unknown age
+keeps the spinner. Tab headers use their selected primary detail's age; each
+pane row uses its own. This changes only the glyph, not status or priority.
 
 Ties in the tab-level roll-up: on equal severity a bounded job outranks a
 service as the tab's primary detail — a spinning build summarizes the tab
 better than a server that is merely up.
 
 Cadence rule, restated per class: *animating* work
-(`TrackedObservation::animating` = Running minus `Service`, so agent rows
-animate too) uses a 5 Hz visual clock for the full run, regardless of its age.
+(`TrackedObservation::animating` = Running minus `Service`, including agents)
+retains the 5 Hz visual clock even after its glyph becomes static; other rail
+animations and timers continue under their existing rules.
 Every fifth frame advances the 1 Hz domain clock. **Scheduled one-shots**
 keep that 1 Hz clock armed — the one-shots being promotable
 pendings awaiting debounce, tentative-Dones awaiting confirm

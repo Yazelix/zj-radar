@@ -100,8 +100,8 @@ impl TrackedObservation {
         }
     }
 
-    /// Running work that draws an *animated* glyph — the one observation state
-    /// that needs per-second ticks. Running services are excluded: they render
+    /// Running work that keeps the visual clock active, including after its
+    /// long-run glyph becomes static. Running services are excluded: they render
     /// the steady `▸` mark, so nothing about them animates
     /// (`docs/activity-model.md` §3). THE shared term of both stores' cadence
     /// predicates (`StatusStore::needs_ticks`,
