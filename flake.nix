@@ -64,6 +64,7 @@
       };
       commonArgs = {
         inherit src;
+        pname = "zj-radar";
         strictDeps = true;
         # zellij-tile's dependency tree pulls openssl-sys (via isahc → curl);
         # its build script needs openssl + pkg-config present. Shared via
