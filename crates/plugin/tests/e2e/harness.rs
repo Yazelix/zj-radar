@@ -874,6 +874,7 @@ pub fn plugin_wasm_path() -> std::path::PathBuf {
 ///     ReadCliPipes
 ///     ChangeApplicationState
 ///     RunCommands
+///     MessageAndLaunchOtherPlugins
 /// }
 /// ```
 ///
@@ -907,6 +908,7 @@ pub fn pre_grant_permissions(wasm: &Path) -> IsolatedEnvironment {
     ReadCliPipes
     ChangeApplicationState
     RunCommands
+    MessageAndLaunchOtherPlugins
 }}
 "#,
             wasm = wasm_str
@@ -967,6 +969,34 @@ pub fn sidebar_layout(plugin_wasm: &Path) -> String {
     pane split_direction="vertical" {{
         pane size=32 borderless=true {{
             plugin location="file:{wasm}"
+        }}
+        pane
+    }}
+}}"#,
+        wasm = wasm_abs.display()
+    )
+}
+
+/// Exercise controller/view messaging in a layout. The controller occupies one
+/// blank column because layout panes cannot be suppressed; integrations load
+/// the same role through `load_plugins`.
+pub fn controller_view_layout(plugin_wasm: &Path) -> String {
+    let wasm_abs = plugin_wasm
+        .canonicalize()
+        .unwrap_or_else(|_| plugin_wasm.to_path_buf());
+    format!(
+        r#"layout {{
+    cwd "/tmp"
+    pane split_direction="vertical" {{
+        pane size=1 borderless=true {{
+            plugin location="file:{wasm}" {{
+                role "controller"
+            }}
+        }}
+        pane size=32 borderless=true {{
+            plugin location="file:{wasm}" {{
+                role "view"
+            }}
         }}
         pane
     }}

@@ -52,8 +52,10 @@ impl Density {
     }
 }
 
-/// Which face this plugin instance plays. A normal launch is all `Sidebar`
-/// instances (the pinned rail). The first-run onboarding *floating* pane sets
+/// Which face this plugin instance plays. A standalone launch uses `Sidebar`
+/// instances (the pinned rail). An integrated layout may instead load one
+/// `Controller` plus lightweight per-tab `View` panes. The first-run onboarding
+/// *floating* pane sets
 /// `role "onboarding"` so it owns Zellij's permission prompt — legibly, because
 /// a floating pane is framed and sized (the prompt is illegible in the small
 /// borderless rail; Zellij #4749) — then closes itself once granted.
@@ -64,13 +66,19 @@ pub enum Role {
     Sidebar,
     /// Transient floating pane that exists only to host the grant prompt.
     Onboarding,
+    /// One suppressed instance that owns session state for lightweight views.
+    Controller,
+    /// A per-tab pane that displays frames produced by the controller.
+    View,
 }
 
 impl Role {
     pub fn from_config(s: &str) -> Option<Self> {
         match s.trim().to_ascii_lowercase().as_str() {
             "onboarding" => Some(Role::Onboarding),
+            "controller" => Some(Role::Controller),
             "sidebar" => Some(Role::Sidebar),
+            "view" => Some(Role::View),
             _ => None,
         }
     }
@@ -216,11 +224,8 @@ impl NamingMode {
 }
 
 /// Generate `Config::from_map` and `Config::apply_overrides` from one field
-/// table, so the KDL-load path and the live-override path parse the same keys
-/// with the same parsers *by construction* — never by hand-kept agreement.
-/// `from_map` is exactly "start from defaults, then apply the map", so an absent
-/// key keeps the field default and the two paths can't interpret a value
-/// differently. Adding a configurable field is one new row.
+/// table. `role` is load-only because changing it after subscriptions and state
+/// initialization would leave a half-transitioned plugin instance.
 ///
 /// One parser contract: every parser is `fn(&str) -> Option<T>`, recognized
 /// values only. A present-but-unparseable value leaves the field untouched —
@@ -235,6 +240,9 @@ macro_rules! config_fields {
             pub fn from_map(cfg: &BTreeMap<String, String>) -> Config {
                 let mut config = Config::default();
                 config.apply_overrides(cfg);
+                if let Some(role) = cfg.get("role").and_then(|v| Role::from_config(v)) {
+                    config.role = role;
+                }
                 config
             }
 
@@ -256,7 +264,6 @@ config_fields! {
     naming:     "naming"     => NamingMode::from_config,
     density:    "density"    => Density::from_config,
     glyphs:     "glyphs"     => crate::status::GlyphSet::from_config,
-    role:       "role"       => Role::from_config,
     grant_hint: "grant_hint" => GrantHint::from_config,
     jump_hint:  "jump_hint"  => JumpHint::from_config,
     header:              "header"              => parse_bool,
@@ -347,8 +354,17 @@ mod tests {
             Config::from_map(&map(&[("role", "ONBOARDING")])).role,
             Role::Onboarding
         );
+        assert_eq!(
+            Config::from_map(&map(&[("role", "controller")])).role,
+            Role::Controller
+        );
+        assert_eq!(Config::from_map(&map(&[("role", "view")])).role, Role::View);
         // unknown → default Sidebar
         assert_eq!(Config::from_map(&map(&[("role", "wat")])).role, Role::Sidebar);
+
+        let mut live = Config::default();
+        live.apply_overrides(&map(&[("role", "controller")]));
+        assert_eq!(live.role, Role::Sidebar, "role is fixed for an instance lifetime");
     }
 
     #[test]

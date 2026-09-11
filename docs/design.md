@@ -69,7 +69,7 @@ classification, `Kind`, the bounded pipe argv; shared by producer and plugin),
 ┌ zj-radar plugin (Rust → wasm32-wasip1) ────────────────────────────────┐
 │  lib.rs: Zellij adapter                                                │
 │    raw Event/PaneInfo/TabInfo ⇄ repo-owned inputs/effects; owns        │
-│    SessionFiles and applies returned effects                           │
+│    SessionFiles, role routing, and applies returned effects            │
 │                                                                        │
 │  runtime.rs: PluginRuntime                                             │
 │    lifecycle, permissions, timers, snapshot decisions, naming,         │
@@ -229,6 +229,13 @@ the Zellij server pid; writes are temp-file plus atomic rename. Every live
 instance writes identical content after a broadcast, so races are benign. With
 persistence off, late sidebars start empty until the next broadcast.
 
+Controller/view deployments use one background `controller` for that stateful
+work and lightweight per-tab `view` panes for display and mouse input. A view
+sends its dimensions to the controller over `zj_radar.view_request.v1`; the
+controller renders once per distinct size and replies directly to the sender's
+plugin id over `zj_radar.view_frame.v1`. A ready announcement covers either
+plugin load order. The default `sidebar` role keeps the standalone behavior.
+
 ## 6. Plugin ↔ Zellij wiring
 
 **Permissions.** `ReadApplicationState`, `ReadCliPipes`,
@@ -237,7 +244,10 @@ float), and `RunCommands` (desktop notifications via `osascript` /
 `notify-send`, and the ack re-broadcast). Without `RunCommands`, `run_command`
 is a silent no-op. The pane stays selectable only until
 `PermissionRequestResult` arrives, then `set_selectable(false)` so it never
-steals focus.
+steals focus. Controller/view deployments also grant
+`MessageAndLaunchOtherPlugins` for their internal request/frame messages. Both
+roles request the same five-permission union because Zellij caches one grant per
+Wasm path; a smaller view request would replace the controller's full grant.
 
 **Per-tab prompt coordination.** On an uncached first run, `SessionFiles` uses
 a session-scoped lock to elect one instance to call `request_permission()`;
@@ -246,9 +256,11 @@ One prompt instead of one per tab. Without writable session files it degrades
 to every instance prompting. `setup zellij` normally pre-seeds the grant into
 `permissions.kdl` so no prompt appears at all ([`install.md`](install.md#permissions)).
 
-**Subscriptions.** `TabUpdate`, `PaneUpdate`, `CwdChanged`, `CommandChanged`,
-`Timer`, `Mouse`, `PermissionRequestResult`, `ModeUpdate` (carries
-`ModeInfo.session_name`, the session-name source §13 depends on).
+**Subscriptions.** Sidebar and controller roles subscribe to `TabUpdate`,
+`PaneUpdate`, `CwdChanged`, `CommandChanged`, `Timer`, `Mouse`,
+`PermissionRequestResult`, and `ModeUpdate` (carries `ModeInfo.session_name`,
+the session-name source §13 depends on). Views subscribe only to mouse and
+permission results; pipe delivery needs no event subscription.
 
 **Tab index footgun.** `TabInfo.position` is 0-indexed; `switch_tab_to` is
 1-indexed. `display_tab_number = position + 1` is used for both rendering and
@@ -369,10 +381,11 @@ does not keep Fast alive.
 
 ## 9. Render gate
 
-Zellij delivers every broadcast and topology event to every tab's instance,
-each running under a wasm interpreter, so one chatty producer multiplies
-across N tabs at interpreter prices. Three layers keep repaints proportional
-to change:
+In the default sidebar deployment, Zellij delivers every broadcast and topology
+event to every tab's instance, each running under a wasm interpreter, so one
+chatty producer multiplies across N tabs at interpreter prices. Controller/view
+deployments pay that stateful work once per session. Three layers keep the
+remaining repaints proportional to change:
 
 1. **Intake no-ops.** An intake that changed nothing rows-visible reports a
    default `RadarChange`: an identical status re-broadcast (producers

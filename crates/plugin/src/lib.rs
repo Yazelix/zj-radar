@@ -1,7 +1,8 @@
 //! The Zellij sidebar wasm plugin: per-tab agent-status rail.
 //!
 //! # Shape
-//! - [`State`] is the per-tab plugin instance Zellij loads. It owns a
+//! - [`State`] is the plugin instance Zellij loads. The default sidebar and
+//!   controller roles own a
 //!   [`runtime::PluginRuntime`] (the host-testable state machine — pure apart
 //!   from wall-clock reads via `clock::now_epoch_s`; the stores it drives take
 //!   epochs as arguments, which is where determinism matters) and a
@@ -84,6 +85,52 @@ const CONFIG_PIPE: &str = config::CONFIG_PIPE;
 #[cfg(target_arch = "wasm32")]
 const CMD_PIPE: &str = control::CMD_PIPE;
 
+#[cfg(target_arch = "wasm32")]
+const VIEW_REQUEST_PIPE: &str = "zj_radar.view_request.v1";
+#[cfg(target_arch = "wasm32")]
+const VIEW_FRAME_PIPE: &str = "zj_radar.view_frame.v1";
+#[cfg(target_arch = "wasm32")]
+const VIEW_READY_PIPE: &str = "zj_radar.view_ready.v1";
+const MAX_VIEW_DIMENSION: usize = 1_000;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ViewRequest {
+    Size { rows: usize, cols: usize },
+    LeftClick { line: isize, col: usize },
+    RightClick { line: isize, col: usize },
+}
+
+fn parse_view_request(raw: &str) -> Option<ViewRequest> {
+    let mut fields = raw.split(':');
+    let kind = fields.next()?;
+    let first = fields.next()?;
+    let second = fields.next()?;
+    if fields.next().is_some() {
+        return None;
+    }
+    match kind {
+        "size" => {
+            let rows = first.parse().ok()?;
+            let cols = second.parse().ok()?;
+            (rows > 0 && cols > 0 && rows <= MAX_VIEW_DIMENSION && cols <= MAX_VIEW_DIMENSION)
+                .then_some(ViewRequest::Size { rows, cols })
+        }
+        "left" | "right" => {
+            let line = first.parse().ok()?;
+            let col = second.parse().ok()?;
+            if line < 0 || line as usize >= MAX_VIEW_DIMENSION || col >= MAX_VIEW_DIMENSION {
+                return None;
+            }
+            Some(if kind == "left" {
+                ViewRequest::LeftClick { line, col }
+            } else {
+                ViewRequest::RightClick { line, col }
+            })
+        }
+        _ => None,
+    }
+}
+
 #[derive(Default)]
 pub struct State {
     runtime: PluginRuntime,
@@ -91,6 +138,16 @@ pub struct State {
     session_files: SessionFiles,
     #[cfg(target_arch = "wasm32")]
     plugin_id: Option<u32>,
+    #[cfg(target_arch = "wasm32")]
+    role: config::Role,
+    #[cfg(target_arch = "wasm32")]
+    view_granted: bool,
+    #[cfg(target_arch = "wasm32")]
+    view_size: Option<(usize, usize)>,
+    #[cfg(target_arch = "wasm32")]
+    view_frame: String,
+    #[cfg(target_arch = "wasm32")]
+    views: BTreeMap<u32, (usize, usize)>,
 }
 
 // ── Pure helper wrappers (no host calls) — compiled only for host tests ──
@@ -172,7 +229,101 @@ impl State {
 impl State {
     fn handle_outcome(&mut self, outcome: runtime::Outcome) -> bool {
         let render = outcome.render;
-        self.handle_effects(outcome.effects) || render
+        let render = self.handle_effects(outcome.effects) || render;
+        if self.role == config::Role::Controller {
+            if render {
+                self.publish_views();
+            }
+            false
+        } else {
+            render
+        }
+    }
+
+    fn request_controller(&self, payload: String) {
+        pipe_message_to_plugin(MessageToPlugin::new(VIEW_REQUEST_PIPE).with_payload(payload));
+    }
+
+    fn announce_controller() {
+        pipe_message_to_plugin(MessageToPlugin::new(VIEW_READY_PIPE));
+    }
+
+    fn send_view_frame(plugin_id: u32, frame: String) {
+        pipe_message_to_plugin(
+            MessageToPlugin::new(VIEW_FRAME_PIPE)
+                .with_destination_plugin_id(plugin_id)
+                .with_payload(frame),
+        );
+    }
+
+    fn publish_view(&mut self, plugin_id: u32, size: (usize, usize)) {
+        let frame = self.runtime.render(size.0, size.1);
+        Self::send_view_frame(plugin_id, frame);
+    }
+
+    fn publish_views(&mut self) {
+        let views: Vec<_> = self.views.iter().map(|(&id, &size)| (id, size)).collect();
+        let mut frames = BTreeMap::new();
+        for (plugin_id, size) in views {
+            let frame = frames
+                .entry(size)
+                .or_insert_with(|| self.runtime.render(size.0, size.1))
+                .clone();
+            Self::send_view_frame(plugin_id, frame);
+        }
+    }
+
+    fn handle_view_request(&mut self, message: &PipeMessage) -> bool {
+        let PipeSource::Plugin(plugin_id) = &message.source else {
+            return false;
+        };
+        let plugin_id = *plugin_id;
+        let Some(request) = message.payload.as_deref().and_then(parse_view_request) else {
+            return false;
+        };
+        match request {
+            ViewRequest::Size { rows, cols } => {
+                let size = (rows, cols);
+                self.views.insert(plugin_id, size);
+                self.publish_view(plugin_id, size);
+            }
+            ViewRequest::LeftClick { line, col } => {
+                let Some(&size) = self.views.get(&plugin_id) else { return false };
+                let _ = self.runtime.render(size.0, size.1);
+                let outcome = self.runtime.mouse_click(line, col);
+                self.handle_outcome(outcome);
+            }
+            ViewRequest::RightClick { line, col } => {
+                let Some(&size) = self.views.get(&plugin_id) else { return false };
+                let _ = self.runtime.render(size.0, size.1);
+                let outcome = self.runtime.mouse_right_click(line, col);
+                self.handle_outcome(outcome);
+            }
+        }
+        false
+    }
+
+    fn update_view(&mut self, event: Event) -> bool {
+        match event {
+            Event::PermissionRequestResult(status) => {
+                self.view_granted = status == PermissionStatus::Granted;
+                if self.view_granted {
+                    if let Some((rows, cols)) = self.view_size {
+                        self.request_controller(format!("size:{rows}:{cols}"));
+                    }
+                }
+                true
+            }
+            Event::Mouse(Mouse::LeftClick(line, col)) if self.view_granted => {
+                self.request_controller(format!("left:{line}:{col}"));
+                false
+            }
+            Event::Mouse(Mouse::RightClick(line, col)) if self.view_granted => {
+                self.request_controller(format!("right:{line}:{col}"));
+                false
+            }
+            _ => false,
+        }
     }
 
     /// Returns whether any *re-entrant* outcome handled along the way (see
@@ -184,10 +335,17 @@ impl State {
         let mut render = false;
         for effect in effects {
             match effect {
-                // Keep in lockstep with REQUIRED_PLUGIN_PERMISSIONS in
-                // crates/cli/src/run.rs: adding a permission here makes every
-                // existing grant partial, and the CLI must detect that (a
-                // partial grant re-prompts illegibly inside the rail).
+                // The default arm stays in lockstep with the standalone CLI.
+                // Controller/view integrations seed their five-permission union.
+                Effect::RequestPermission if self.role == config::Role::Controller => {
+                    request_permission(&[
+                        PermissionType::ReadApplicationState,
+                        PermissionType::ReadCliPipes,
+                        PermissionType::ChangeApplicationState,
+                        PermissionType::RunCommands,
+                        PermissionType::MessageAndLaunchOtherPlugins,
+                    ])
+                }
                 Effect::RequestPermission => request_permission(&[
                     PermissionType::ReadApplicationState,
                     PermissionType::ReadCliPipes,
@@ -318,6 +476,19 @@ impl State {
 #[cfg(target_arch = "wasm32")]
 impl ZellijPlugin for State {
     fn load(&mut self, config: BTreeMap<String, String>) {
+        let config = config::Config::from_map(&config);
+        self.role = config.role;
+        if self.role == config::Role::View {
+            subscribe(&[EventType::Mouse, EventType::PermissionRequestResult]);
+            request_permission(&[
+                PermissionType::ReadApplicationState,
+                PermissionType::ReadCliPipes,
+                PermissionType::ChangeApplicationState,
+                PermissionType::RunCommands,
+                PermissionType::MessageAndLaunchOtherPlugins,
+            ]);
+            return;
+        }
         subscribe(&[
             EventType::TabUpdate,
             EventType::PaneUpdate,
@@ -354,7 +525,7 @@ impl ZellijPlugin for State {
         });
         self.session_files = session.files;
         let outcome = self.runtime.load(
-            config::Config::from_map(&config),
+            config,
             session.snapshot.as_deref(),
             session.permission,
         );
@@ -362,6 +533,9 @@ impl ZellijPlugin for State {
     }
 
     fn update(&mut self, event: Event) -> bool {
+        if self.role == config::Role::View {
+            return self.update_view(event);
+        }
         match event {
             Event::TabUpdate(tabs) => {
                 let tabs = tabs
@@ -378,6 +552,16 @@ impl ZellijPlugin for State {
                 self.handle_outcome(outcome)
             }
             Event::PaneUpdate(manifest) => {
+                if self.role == config::Role::Controller {
+                    let live: std::collections::HashSet<u32> = manifest
+                        .panes
+                        .values()
+                        .flatten()
+                        .filter(|pane| pane.is_plugin)
+                        .map(|pane| pane.id)
+                        .collect();
+                    self.views.retain(|plugin_id, _| live.contains(plugin_id));
+                }
                 let own_tab_position = self.plugin_id.and_then(|plugin_id| {
                     manifest.panes.iter().find_map(|(tab_pos, panes)| {
                         panes
@@ -448,7 +632,11 @@ impl ZellijPlugin for State {
             Event::PermissionRequestResult(status) => {
                 let granted = status == PermissionStatus::Granted;
                 let outcome = self.runtime.permission_result(granted);
-                self.handle_outcome(outcome)
+                let render = self.handle_outcome(outcome);
+                if granted && self.role == config::Role::Controller {
+                    Self::announce_controller();
+                }
+                render
             }
             Event::ModeUpdate(mode_info) => {
                 let outcome = self.runtime.session_name_changed(mode_info.session_name);
@@ -475,6 +663,22 @@ impl ZellijPlugin for State {
     }
 
     fn pipe(&mut self, message: PipeMessage) -> bool {
+        if self.role == config::Role::View {
+            if message.name == VIEW_FRAME_PIPE {
+                if let Some(frame) = message.payload {
+                    self.view_frame = frame;
+                    return true;
+                }
+            } else if message.name == VIEW_READY_PIPE && self.view_granted {
+                if let Some((rows, cols)) = self.view_size {
+                    self.request_controller(format!("size:{rows}:{cols}"));
+                }
+            }
+            return false;
+        }
+        if self.role == config::Role::Controller && message.name == VIEW_REQUEST_PIPE {
+            return self.handle_view_request(&message);
+        }
         let Some(raw) = &message.payload else { return false };
         let outcome = match message.name.as_str() {
             PIPE_NAME => self.runtime.status_pipe(raw),
@@ -486,7 +690,23 @@ impl ZellijPlugin for State {
     }
 
     fn render(&mut self, rows: usize, cols: usize) {
-        print!("{}", self.runtime.render(rows, cols));
+        if self.role == config::Role::View {
+            let size = (rows, cols);
+            if self.view_size != Some(size) {
+                self.view_size = Some(size);
+                self.view_frame.clear();
+                if self.view_granted {
+                    self.request_controller(format!("size:{rows}:{cols}"));
+                }
+            }
+            if self.view_frame.is_empty() {
+                print!(" Radar\n");
+            } else {
+                print!("{}", self.view_frame);
+            }
+        } else if self.role != config::Role::Controller {
+            print!("{}", self.runtime.render(rows, cols));
+        }
     }
 }
 
@@ -498,6 +718,17 @@ mod tests {
     use crate::payload::StatusPayload;
     use crate::status::Status;
     use crate::test_fixtures::{pane, payload_for, tab};
+
+    #[test]
+    fn view_requests_parse_exact_bounded_messages() {
+        assert_eq!(parse_view_request("size:38:32"), Some(ViewRequest::Size { rows: 38, cols: 32 }));
+        assert_eq!(parse_view_request("left:4:9"), Some(ViewRequest::LeftClick { line: 4, col: 9 }));
+        assert_eq!(parse_view_request("right:1:2"), Some(ViewRequest::RightClick { line: 1, col: 2 }));
+
+        for invalid in ["", "size:0:32", "size:38:0", "size:1001:32", "left:-1:2", "left:4", "left:4:9:1"] {
+            assert_eq!(parse_view_request(invalid), None, "{invalid:?}");
+        }
+    }
 
     /// The bash fallback producer can't import `payload::STATUS_PIPE_NAME`, so
     /// its hand-typed literal is pinned here — one drifted character in a pipe
@@ -516,14 +747,13 @@ mod tests {
     }
 
     /// The CLI's grant probe (`REQUIRED_PLUGIN_PERMISSIONS` in
-    /// crates/cli/src/run.rs) must cover exactly the set this plugin requests:
-    /// a permission added to the request list but not the probe makes every
-    /// existing grant partial, and Zellij's re-prompt is illegible inside the
-    /// rail (zellij#4749) — the failure presents as a silently blank rail.
+    /// crates/cli/src/run.rs) must cover the default sidebar's permissions.
+    /// Controller/view deployments additionally need plugin messaging and
+    /// seed that grant at their integration boundary.
     /// Text-pinned like the pipe-name guard above, because the two lists live
     /// on opposite sides of the wasm boundary and can't share a const.
     #[test]
-    fn cli_grant_probe_covers_the_exact_requested_permission_set() {
+    fn cli_grant_probe_covers_default_sidebar_permissions() {
         let full_src = include_str!("lib.rs");
         // Scan only the production half of this file (this test would match
         // itself); there, every such token is the request list — the SDK type
@@ -546,11 +776,11 @@ mod tests {
         let probed: std::collections::BTreeSet<&str> =
             cli_src[open..close].split('"').skip(1).step_by(2).collect();
 
+        assert!(requested.is_superset(&probed));
         assert_eq!(
-            requested, probed,
-            "the plugin's request_permission list and the CLI's \
-             REQUIRED_PLUGIN_PERMISSIONS probe drifted — update both together \
-             (a partial grant presents as a silently blank rail)"
+            requested.difference(&probed).copied().collect::<Vec<_>>(),
+            ["MessageAndLaunchOtherPlugins"],
+            "only controller/view messaging may extend the default sidebar grant"
         );
     }
 

@@ -117,6 +117,34 @@ fn plugin_loads_and_renders_status() {
     eprintln!("[e2e] PASS: found piped status in the rendered sidebar");
 }
 
+#[test]
+#[ignore = "e2e: requires zellij + built wasm; run via `just test-e2e`"]
+fn controller_renders_status_through_view() {
+    let wasm = plugin_wasm_path();
+    let temp_home = pre_grant_permissions(&wasm);
+    let session_name = format!("zjr_controller_view_{}", std::process::id());
+    let session = ZellijSession::start(
+        &session_name,
+        &controller_view_layout(&wasm),
+        &wasm,
+        temp_home,
+    );
+    let pane_id = session.discover_terminal_pane_id();
+    let payload = format!(
+        r#"{{"v":1,"source":"claude","pane":{{"type":"terminal","id":{pane_id}}},"status":"running","repo":"web","branch":"main","msg":"controller view"}}"#
+    );
+    session.pipe_status(&payload);
+
+    let appeared = session.wait_until(std::time::Duration::from_secs(5), |s| {
+        sidebar_region(&s.screen(), 34).contains("controller view")
+    });
+    let sidebar = sidebar_region(&session.screen(), 34);
+    assert!(
+        appeared,
+        "controller must render piped status through its view;\nsidebar:\n{sidebar}"
+    );
+}
+
 /// A real left click on the exact, one-based screen coordinate of the pending
 /// glyph acknowledges through Zellij's mouse routing and the plugin's pipe
 /// echo. This is the layer that the unreachable right-click implementation
