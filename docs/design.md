@@ -259,8 +259,10 @@ to every instance prompting. `setup zellij` normally pre-seeds the grant into
 **Subscriptions.** Sidebar and controller roles subscribe to `TabUpdate`,
 `PaneUpdate`, `CwdChanged`, `CommandChanged`, `Timer`, `Mouse`,
 `PermissionRequestResult`, and `ModeUpdate` (carries `ModeInfo.session_name`,
-the session-name source §13 depends on). Views subscribe only to mouse and
-permission results; pipe delivery needs no event subscription.
+the session-name source §13 depends on). `InitialKeybinds` opts into separate
+keymap delivery so mode updates omit unused bindings; keymap events are ignored.
+Views subscribe only to mouse and permission results; pipe delivery needs no
+event subscription.
 
 **Tab index footgun.** `TabInfo.position` is 0-indexed; `switch_tab_to` is
 1-indexed. `display_tab_number = position + 1` is used for both rendering and

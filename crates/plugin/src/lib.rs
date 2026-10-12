@@ -514,6 +514,8 @@ impl ZellijPlugin for State {
             // `sessions::STALE_AFTER_SECS`) → stale/dimmed (90–300s) →
             // reaped past `sessions::DEAD_AFTER_SECS` (300s).
             EventType::ModeUpdate,
+            // Keep unused keybindings out of frequent mode updates.
+            EventType::InitialKeybinds,
         ]);
         // Seed from the shared snapshot so a tab opened after agents were already
         // running shows their real status instead of a blank (all-idle) rail.
